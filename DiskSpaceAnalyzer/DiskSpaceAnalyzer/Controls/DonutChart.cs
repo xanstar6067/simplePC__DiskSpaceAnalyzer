@@ -11,6 +11,7 @@ using WpfColor = System.Windows.Media.Color;
 using WpfPoint = System.Windows.Point;
 using WpfSize = System.Windows.Size;
 using WpfSolidColorBrush = System.Windows.Media.SolidColorBrush;
+using WpfToolTip = System.Windows.Controls.ToolTip;
 
 namespace DiskSpaceAnalyzer.Controls;
 
@@ -45,7 +46,18 @@ public sealed class DonutChart : FrameworkElement
     ];
 
     private readonly List<SliceHitArea> _hitAreas = [];
+    private readonly WpfToolTip _sliceToolTip;
     private INotifyCollectionChanged? _collectionChanged;
+    private ScanNode? _hoveredNode;
+
+    public DonutChart()
+    {
+        _sliceToolTip = new WpfToolTip
+        {
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Mouse,
+            PlacementTarget = this
+        };
+    }
 
     public IEnumerable? ItemsSource
     {
@@ -115,21 +127,39 @@ public sealed class DonutChart : FrameworkElement
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e);
-        var position = e.GetPosition(this);
-        foreach (var area in _hitAreas)
+        var area = FindHitArea(e.GetPosition(this));
+        if (area is not null && SliceCommand?.CanExecute(area.Node) == true)
         {
-            if (!area.Contains(position))
-            {
-                continue;
-            }
-
-            if (SliceCommand?.CanExecute(area.Node) == true)
-            {
-                SliceCommand.Execute(area.Node);
-            }
-
-            break;
+            SliceCommand.Execute(area.Node);
         }
+    }
+
+    protected override void OnMouseMove(System.Windows.Input.MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+
+        var area = FindHitArea(e.GetPosition(this));
+        var node = area?.Node;
+        if (ReferenceEquals(node, _hoveredNode))
+        {
+            return;
+        }
+
+        _hoveredNode = node;
+        Cursor = node is null ? null : System.Windows.Input.Cursors.Hand;
+        if (node is null)
+        {
+            HideSliceToolTip();
+            return;
+        }
+
+        ShowSliceToolTip(node);
+    }
+
+    protected override void OnMouseLeave(System.Windows.Input.MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        ClearHover();
     }
 
     private IEnumerable<ScanNode> GetNodes()
@@ -138,6 +168,29 @@ public sealed class DonutChart : FrameworkElement
             .Where(node => node.SizeOnDisk > 0)
             .OrderByDescending(node => node.SizeOnDisk)
             .Take(10) ?? [];
+    }
+
+    private SliceHitArea? FindHitArea(WpfPoint position)
+    {
+        return _hitAreas.FirstOrDefault(area => area.Contains(position));
+    }
+
+    private void ShowSliceToolTip(ScanNode node)
+    {
+        _sliceToolTip.Content = $"{node.DisplayName}{Environment.NewLine}{node.SizeOnDiskText}";
+        _sliceToolTip.IsOpen = true;
+    }
+
+    private void HideSliceToolTip()
+    {
+        _sliceToolTip.IsOpen = false;
+    }
+
+    private void ClearHover()
+    {
+        _hoveredNode = null;
+        Cursor = null;
+        HideSliceToolTip();
     }
 
     private static Geometry CreateDonutSlice(WpfPoint center, double radius, double innerRadius, double startAngle, double endAngle)
@@ -205,11 +258,13 @@ public sealed class DonutChart : FrameworkElement
             chart._collectionChanged.CollectionChanged += chart.OnCollectionChanged;
         }
 
+        chart.ClearHover();
         chart.InvalidateVisual();
     }
 
     private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        ClearHover();
         InvalidateVisual();
     }
 
