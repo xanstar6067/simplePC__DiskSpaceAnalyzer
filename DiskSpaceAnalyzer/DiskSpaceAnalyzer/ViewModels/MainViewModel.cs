@@ -18,6 +18,7 @@ public sealed class MainViewModel : ViewModelBase
     private readonly ShellService _shell = new();
     private readonly ObservableCollection<string> _excludedPaths = [];
     private readonly Stack<ScanNode> _navigationHistory = new();
+    private readonly DispatcherTimer _driveRefreshTimer;
     private DiskScanner _scanner;
     private CancellationTokenSource? _scanCancellation;
     private INotifyCollectionChanged? _selectedChildren;
@@ -61,6 +62,13 @@ public sealed class MainViewModel : ViewModelBase
         ClearCacheCommand = new RelayCommand(_ => ClearCache(), _ => !IsScanning);
 
         LoadDrives();
+
+        _driveRefreshTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(3)
+        };
+        _driveRefreshTimer.Tick += (_, _) => RefreshAvailableDrives(selectFirst: false);
+        _driveRefreshTimer.Start();
     }
 
     public ObservableCollection<DriveSummary> AvailableDrives { get; } = [];
@@ -113,7 +121,14 @@ public sealed class MainViewModel : ViewModelBase
                 AddDriveCommand.RaiseCanExecuteChanged();
                 if (value is not null && !IsScanning)
                 {
-                    TryShowCachedScan(value.RootPath);
+                    if (!TryShowCachedScan(value.RootPath))
+                    {
+                        ClearAnalysisView($"Для выбранного диска нет кэша: {value.RootPath}");
+                    }
+                }
+                else if (value is null && !IsScanning)
+                {
+                    ClearAnalysisView("Выберите диск или папку для анализа");
                 }
             }
         }
@@ -322,13 +337,41 @@ public sealed class MainViewModel : ViewModelBase
 
     private void LoadDrives()
     {
+        RefreshAvailableDrives(selectFirst: true);
+    }
+
+    private void RefreshAvailableDrives(bool selectFirst)
+    {
+        var drives = _driveInfoService.GetReadyDrives();
+        var selectedRoot = SelectedDrive?.RootPath;
+        var existingRoots = AvailableDrives.Select(drive => drive.RootPath).ToList();
+        var newRoots = drives.Select(drive => drive.RootPath).ToList();
+
+        if (existingRoots.Count == newRoots.Count &&
+            existingRoots.Zip(newRoots).All(pair => string.Equals(pair.First, pair.Second, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
         AvailableDrives.Clear();
-        foreach (var drive in _driveInfoService.GetReadyDrives())
+        foreach (var drive in drives)
         {
             AvailableDrives.Add(drive);
         }
 
-        SelectedDrive = AvailableDrives.FirstOrDefault();
+        var nextSelection = !string.IsNullOrWhiteSpace(selectedRoot)
+            ? AvailableDrives.FirstOrDefault(drive => string.Equals(drive.RootPath, selectedRoot, StringComparison.OrdinalIgnoreCase))
+            : null;
+
+        if (nextSelection is not null)
+        {
+            _selectedDrive = nextSelection;
+            OnPropertyChanged(nameof(SelectedDrive));
+            AddDriveCommand.RaiseCanExecuteChanged();
+            return;
+        }
+
+        SelectedDrive = selectFirst ? AvailableDrives.FirstOrDefault() : null;
     }
 
     private void AddSelectedDrive()
@@ -393,6 +436,20 @@ public sealed class MainViewModel : ViewModelBase
         RebuildSearchResults();
         QueueChartRefresh();
         return true;
+    }
+
+    private void ClearAnalysisView(string statusSummary)
+    {
+        Roots.Clear();
+        SearchResults.Clear();
+        ClearChartChildren();
+        SelectedNode = null;
+        SelectedChartNode = null;
+        _navigationHistory.Clear();
+        NavigateBackCommand.RaiseCanExecuteChanged();
+        ResetProgress();
+        CacheWarningText = "";
+        StatusSummary = statusSummary;
     }
 
     private void RemoveSelectedTarget()

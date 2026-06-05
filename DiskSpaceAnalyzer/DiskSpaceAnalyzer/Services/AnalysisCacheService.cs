@@ -8,26 +8,27 @@ namespace DiskSpaceAnalyzer.Services;
 public sealed class AnalysisCacheService
 {
     private const int MaxCachedNodesPerSnapshot = 50000;
-    private readonly string _cachePath;
+    private readonly string _cacheDirectory;
+    private readonly string _legacyCachePath;
     private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
-    private Dictionary<string, CachedSnapshot> _snapshots = new(StringComparer.OrdinalIgnoreCase);
-    private bool _loaded;
+    private readonly Dictionary<string, Dictionary<string, CachedSnapshot>> _snapshotsByFile = new(StringComparer.OrdinalIgnoreCase);
 
     public AnalysisCacheService()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var cacheDirectory = Path.Combine(appData, "simplePC DiskSpaceAnalyzer");
-        Directory.CreateDirectory(cacheDirectory);
-        _cachePath = Path.Combine(cacheDirectory, "analysis-cache.json");
+        _cacheDirectory = Path.Combine(appData, "simplePC DiskSpaceAnalyzer");
+        Directory.CreateDirectory(_cacheDirectory);
+        _legacyCachePath = Path.Combine(_cacheDirectory, "analysis-cache.json");
     }
 
     public bool TryRestoreSnapshot(string path, bool analyzeSizeOnDisk, out ScanNode? node)
     {
-        EnsureLoaded();
         node = null;
 
         var normalized = PathRiskClassifier.Normalize(path);
-        if (!_snapshots.TryGetValue(normalized, out var snapshot))
+        var cachePath = GetCachePath(normalized);
+        var snapshots = EnsureLoaded(cachePath);
+        if (!snapshots.TryGetValue(normalized, out var snapshot))
         {
             return false;
         }
@@ -45,14 +46,14 @@ public sealed class AnalysisCacheService
 
     public void StoreSnapshot(ScanNode node, bool analyzeSizeOnDisk)
     {
-        EnsureLoaded();
-
         var normalized = PathRiskClassifier.Normalize(node.FullPath);
+        var cachePath = GetCachePath(normalized);
+        var snapshots = EnsureLoaded(cachePath);
         if (CountNodes(node) > MaxCachedNodesPerSnapshot)
         {
-            if (_snapshots.Remove(normalized))
+            if (snapshots.Remove(normalized))
             {
-                Save();
+                Save(cachePath, snapshots);
             }
 
             return;
@@ -67,58 +68,93 @@ public sealed class AnalysisCacheService
             Metadata = ReadMetadata(node.FullPath)
         };
 
-        _snapshots[snapshot.Path] = snapshot;
-        Save();
+        snapshots[snapshot.Path] = snapshot;
+        Save(cachePath, snapshots);
     }
 
     public void Clear()
     {
-        EnsureLoaded();
-        _snapshots.Clear();
+        _snapshotsByFile.Clear();
 
         try
         {
-            if (File.Exists(_cachePath))
+            foreach (var cachePath in Directory.EnumerateFiles(_cacheDirectory, "analysis-cache*.json"))
             {
-                File.Delete(_cachePath);
+                File.Delete(cachePath);
             }
         }
         catch
         {
-            Save();
+            // Cache failures should not affect the app.
         }
     }
 
-    private void EnsureLoaded()
+    private Dictionary<string, CachedSnapshot> EnsureLoaded(string cachePath)
     {
-        if (_loaded)
+        if (_snapshotsByFile.TryGetValue(cachePath, out var loaded))
         {
-            return;
+            return loaded;
         }
 
-        _loaded = true;
-        if (!File.Exists(_cachePath))
+        var snapshots = new Dictionary<string, CachedSnapshot>(StringComparer.OrdinalIgnoreCase);
+        if (File.Exists(cachePath))
+        {
+            try
+            {
+                var text = File.ReadAllText(cachePath);
+                snapshots = JsonSerializer.Deserialize<Dictionary<string, CachedSnapshot>>(text, _jsonOptions) ?? new(StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                snapshots = new(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        ImportLegacySnapshots(cachePath, snapshots);
+        _snapshotsByFile[cachePath] = snapshots;
+        return snapshots;
+    }
+
+    private void ImportLegacySnapshots(string cachePath, Dictionary<string, CachedSnapshot> snapshots)
+    {
+        if (!File.Exists(_legacyCachePath) || string.Equals(cachePath, _legacyCachePath, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         try
         {
-            var text = File.ReadAllText(_cachePath);
-            _snapshots = JsonSerializer.Deserialize<Dictionary<string, CachedSnapshot>>(text, _jsonOptions) ?? new(StringComparer.OrdinalIgnoreCase);
+            var text = File.ReadAllText(_legacyCachePath);
+            var legacy = JsonSerializer.Deserialize<Dictionary<string, CachedSnapshot>>(text, _jsonOptions);
+            if (legacy is null)
+            {
+                return;
+            }
+
+            var changed = false;
+            foreach (var item in legacy.Where(item => string.Equals(GetCachePath(item.Key), cachePath, StringComparison.OrdinalIgnoreCase)))
+            {
+                snapshots.TryAdd(item.Key, item.Value);
+                changed = true;
+            }
+
+            if (changed)
+            {
+                Save(cachePath, snapshots);
+            }
         }
         catch
         {
-            _snapshots = new(StringComparer.OrdinalIgnoreCase);
+            // Cache migration failures should not affect scanning.
         }
     }
 
-    private void Save()
+    private void Save(string cachePath, Dictionary<string, CachedSnapshot> snapshots)
     {
         try
         {
-            var text = JsonSerializer.Serialize(_snapshots, _jsonOptions);
-            File.WriteAllText(_cachePath, text);
+            var text = JsonSerializer.Serialize(snapshots, _jsonOptions);
+            File.WriteAllText(cachePath, text);
         }
         catch
         {
@@ -126,14 +162,49 @@ public sealed class AnalysisCacheService
         }
     }
 
+    private string GetCachePath(string path)
+    {
+        var normalized = PathRiskClassifier.Normalize(path);
+        var root = Path.GetPathRoot(normalized);
+        var cacheKey = string.IsNullOrWhiteSpace(root) ? normalized : root;
+
+        if (cacheKey.Length >= 2 && cacheKey[1] == ':')
+        {
+            return Path.Combine(_cacheDirectory, $"analysis-cache-{char.ToUpperInvariant(cacheKey[0])}.json");
+        }
+
+        var safeName = string.Join("_", cacheKey.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+        if (string.IsNullOrWhiteSpace(safeName))
+        {
+            safeName = "paths";
+        }
+
+        return Path.Combine(_cacheDirectory, $"analysis-cache-{safeName}.json");
+    }
+
     private static bool MatchesCurrentMetadata(CachedSnapshot snapshot)
     {
         var current = ReadMetadata(snapshot.Path);
-        return current.Exists &&
-               current.Length == snapshot.Metadata.Length &&
+        if (!current.Exists || current.Attributes != snapshot.Metadata.Attributes)
+        {
+            return false;
+        }
+
+        if (IsDriveRoot(snapshot.Path))
+        {
+            return string.IsNullOrWhiteSpace(snapshot.Metadata.FileId) || current.FileId == snapshot.Metadata.FileId;
+        }
+
+        return current.Length == snapshot.Metadata.Length &&
                current.LastWriteUtc == snapshot.Metadata.LastWriteUtc &&
-               current.Attributes == snapshot.Metadata.Attributes &&
                (string.IsNullOrWhiteSpace(snapshot.Metadata.FileId) || current.FileId == snapshot.Metadata.FileId);
+    }
+
+    private static bool IsDriveRoot(string path)
+    {
+        var root = Path.GetPathRoot(path);
+        return !string.IsNullOrWhiteSpace(root) &&
+               string.Equals(PathRiskClassifier.Normalize(path), PathRiskClassifier.Normalize(root), StringComparison.OrdinalIgnoreCase);
     }
 
     private static CachedMetadata ReadMetadata(string path)
