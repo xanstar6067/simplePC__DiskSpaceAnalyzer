@@ -36,12 +36,24 @@ public sealed class DriveInfoService
             return StorageKind.Unknown;
         }
 
+        if (SystemInterop.TryDetectStorageKind(root, out var storageKind))
+        {
+            return storageKind;
+        }
+
         try
         {
             var command =
                 "$ErrorActionPreference='Stop';" +
-                $"$p=Get-Partition -DriveLetter '{driveLetter}' | Get-Disk | Get-PhysicalDisk | Select-Object -First 1 MediaType,BusType;" +
-                "if($p){ Write-Output \"$($p.MediaType)|$($p.BusType)\" }";
+                $"$disk=Get-Partition -DriveLetter '{driveLetter}' | Get-Disk | Select-Object -First 1;" +
+                "$physical=$null;" +
+                "if($disk){" +
+                "  $physical=Get-PhysicalDisk | Where-Object { $_.DeviceId -eq [string]$disk.Number -or $_.FriendlyName -eq $disk.FriendlyName } | Select-Object -First 1;" +
+                "}" +
+                "$media=if($physical){$physical.MediaType}else{''};" +
+                "$bus=if($disk){$disk.BusType}else{if($physical){$physical.BusType}else{''}};" +
+                "$model=(($disk.FriendlyName,$physical.FriendlyName) -join ' ');" +
+                "Write-Output \"$media|$bus|$model\"";
 
             using var process = Process.Start(new ProcessStartInfo
             {
@@ -78,21 +90,25 @@ public sealed class DriveInfoService
                 return StorageKind.Unknown;
             }
 
-            var parts = output.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var parts = output.Split('|', StringSplitOptions.TrimEntries);
             var mediaType = parts.ElementAtOrDefault(0) ?? "";
             var busType = parts.ElementAtOrDefault(1) ?? "";
+            var model = parts.ElementAtOrDefault(2) ?? "";
 
-            if (busType.Contains("NVMe", StringComparison.OrdinalIgnoreCase))
+            if (busType.Contains("NVMe", StringComparison.OrdinalIgnoreCase) ||
+                model.Contains("NVMe", StringComparison.OrdinalIgnoreCase))
             {
                 return StorageKind.NvmeSsd;
             }
 
-            if (mediaType.Contains("SSD", StringComparison.OrdinalIgnoreCase))
+            if (mediaType.Contains("SSD", StringComparison.OrdinalIgnoreCase) ||
+                model.Contains("SSD", StringComparison.OrdinalIgnoreCase))
             {
                 return StorageKind.Ssd;
             }
 
-            if (mediaType.Contains("HDD", StringComparison.OrdinalIgnoreCase))
+            if (mediaType.Contains("HDD", StringComparison.OrdinalIgnoreCase) ||
+                mediaType.Contains("Hard disk", StringComparison.OrdinalIgnoreCase))
             {
                 return StorageKind.Hdd;
             }

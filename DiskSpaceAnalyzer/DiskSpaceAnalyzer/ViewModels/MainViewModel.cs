@@ -30,6 +30,7 @@ public sealed class MainViewModel : ViewModelBase
     private string _searchQuery = "";
     private bool _includeSystemDirectories;
     private bool _ignoreCache;
+    private bool _analyzeSizeOnDisk = true;
     private bool _isScanning;
     private bool _chartRefreshQueued;
     private bool _isRefreshingChartChildren;
@@ -207,6 +208,12 @@ public sealed class MainViewModel : ViewModelBase
         set => SetProperty(ref _ignoreCache, value);
     }
 
+    public bool AnalyzeSizeOnDisk
+    {
+        get => _analyzeSizeOnDisk;
+        set => SetProperty(ref _analyzeSizeOnDisk, value);
+    }
+
     public bool IsScanning
     {
         get => _isScanning;
@@ -382,6 +389,7 @@ public sealed class MainViewModel : ViewModelBase
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
             IgnoreCache = IgnoreCache,
+            AnalyzeSizeOnDisk = AnalyzeSizeOnDisk,
             ExcludedPaths = _excludedPaths.ToList()
         };
 
@@ -438,6 +446,7 @@ public sealed class MainViewModel : ViewModelBase
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
             IgnoreCache = true,
+            AnalyzeSizeOnDisk = AnalyzeSizeOnDisk,
             ExcludedPaths = _excludedPaths.ToList()
         };
 

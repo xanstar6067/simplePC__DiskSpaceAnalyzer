@@ -21,7 +21,7 @@ public sealed class AnalysisCacheService
         _cachePath = Path.Combine(cacheDirectory, "analysis-cache.json");
     }
 
-    public bool TryRestoreSnapshot(string path, out ScanNode? node)
+    public bool TryRestoreSnapshot(string path, bool analyzeSizeOnDisk, out ScanNode? node)
     {
         EnsureLoaded();
         node = null;
@@ -32,7 +32,8 @@ public sealed class AnalysisCacheService
             return false;
         }
 
-        if (!MatchesCurrentMetadata(snapshot))
+        if (snapshot.AnalyzeSizeOnDisk.GetValueOrDefault(true) != analyzeSizeOnDisk ||
+            !MatchesCurrentMetadata(snapshot))
         {
             return false;
         }
@@ -42,7 +43,7 @@ public sealed class AnalysisCacheService
         return true;
     }
 
-    public void StoreSnapshot(ScanNode node)
+    public void StoreSnapshot(ScanNode node, bool analyzeSizeOnDisk)
     {
         EnsureLoaded();
 
@@ -55,6 +56,7 @@ public sealed class AnalysisCacheService
         {
             Path = PathRiskClassifier.Normalize(node.FullPath),
             CachedAt = DateTimeOffset.UtcNow,
+            AnalyzeSizeOnDisk = analyzeSizeOnDisk,
             Node = FromNode(node),
             Metadata = ReadMetadata(node.FullPath)
         };
@@ -217,6 +219,8 @@ public sealed class AnalysisCacheService
         public string Path { get; set; } = string.Empty;
 
         public DateTimeOffset CachedAt { get; set; }
+
+        public bool? AnalyzeSizeOnDisk { get; set; }
 
         public CachedMetadata Metadata { get; set; } = new();
 

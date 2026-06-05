@@ -24,7 +24,7 @@ public sealed class DiskScanner
         return Task.Run(() =>
         {
             var normalized = PathRiskClassifier.Normalize(path);
-            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, out var cached) && cached is not null)
+            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, options.AnalyzeSizeOnDisk, out var cached) && cached is not null)
             {
                 AddCachedCounters(cached, out var files, out var directories, out var logical, out var onDisk);
                 progress?.Report(new ScanProgressInfo
@@ -45,7 +45,7 @@ public sealed class DiskScanner
 
             if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
             {
-                _cache.StoreSnapshot(root);
+                _cache.StoreSnapshot(root, options.AnalyzeSizeOnDisk);
             }
 
             return root;
@@ -84,7 +84,7 @@ public sealed class DiskScanner
                 return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild);
             }
 
-            return ScanFile(path, fileSystemInfo, counters);
+            return ScanFile(path, fileSystemInfo, options, counters);
         }
         catch (UnauthorizedAccessException)
         {
@@ -221,7 +221,7 @@ public sealed class DiskScanner
         });
     }
 
-    private ScanNode ScanFile(string path, FileSystemInfo? fileSystemInfo, ScanCounters counters)
+    private ScanNode ScanFile(string path, FileSystemInfo? fileSystemInfo, ScanOptions options, ScanCounters counters)
     {
         var node = CreateBaseNode(path, FileSystemItemKind.File, _classifier.Classify(path), "Готово");
         FillMetadata(node, fileSystemInfo);
@@ -230,7 +230,9 @@ public sealed class DiskScanner
         {
             var info = fileSystemInfo as FileInfo ?? new FileInfo(path);
             node.LogicalSize = info.Length;
-            node.SizeOnDisk = SystemInterop.GetSizeOnDisk(path, node.LogicalSize);
+            node.SizeOnDisk = options.AnalyzeSizeOnDisk
+                ? SystemInterop.GetSizeOnDisk(path, node.LogicalSize)
+                : node.LogicalSize;
             node.ModifiedAt = info.LastWriteTime;
         }
         catch
