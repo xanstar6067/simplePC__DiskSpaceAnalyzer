@@ -40,7 +40,7 @@ public sealed class DiskScanner
             }
 
             var counters = new ScanCounters();
-            var root = ScanEntry(normalized, options, counters, progress, cancellationToken, isRootChild: true);
+            var root = ScanEntry(normalized, fileSystemInfo: null, options, counters, progress, cancellationToken, isRootChild: true);
             root.IsExpanded = true;
 
             if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
@@ -54,6 +54,7 @@ public sealed class DiskScanner
 
     private ScanNode ScanEntry(
         string path,
+        FileSystemInfo? fileSystemInfo,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
@@ -70,20 +71,20 @@ public sealed class DiskScanner
 
         try
         {
-            var attributes = File.GetAttributes(path);
+            var attributes = fileSystemInfo?.Attributes ?? File.GetAttributes(path);
             if (attributes.HasFlag(FileAttributes.ReparsePoint))
             {
                 var linkNode = CreateBaseNode(path, FileSystemItemKind.Link, _classifier.Classify(path), "Ссылка пропущена");
-                FillMetadata(linkNode, attributes);
+                FillMetadata(linkNode, fileSystemInfo);
                 return linkNode;
             }
 
             if (attributes.HasFlag(FileAttributes.Directory))
             {
-                return ScanDirectory(path, attributes, options, counters, progress, cancellationToken, isRootChild);
+                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild);
             }
 
-            return ScanFile(path, attributes, counters);
+            return ScanFile(path, fileSystemInfo, counters);
         }
         catch (UnauthorizedAccessException)
         {
@@ -106,7 +107,7 @@ public sealed class DiskScanner
 
     private ScanNode ScanDirectory(
         string path,
-        FileAttributes attributes,
+        FileSystemInfo? fileSystemInfo,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
@@ -115,7 +116,7 @@ public sealed class DiskScanner
     {
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
         var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
-        FillMetadata(node, attributes);
+        FillMetadata(node, fileSystemInfo);
 
         if (decision.ShouldSkip)
         {
@@ -129,7 +130,7 @@ public sealed class DiskScanner
             ? "Сканируется"
             : "Частичный безопасный анализ";
 
-        IEnumerable<string> entries;
+        IEnumerable<FileSystemInfo> entries;
         try
         {
             entries = GetDirectoryEntries(path, options);
@@ -149,30 +150,48 @@ public sealed class DiskScanner
             return node;
         }
 
-        foreach (var childPath in entries)
+        try
         {
-            if (cancellationToken.IsCancellationRequested)
+            foreach (var childInfo in entries)
             {
-                node.StatusText = "Отменено";
-                break;
-            }
-
-            var child = ScanEntry(childPath, options, counters, progress, cancellationToken, isRootChild: false);
-            node.AddChild(child);
-            Accumulate(node, child);
-
-            if (isRootChild)
-            {
-                progress?.Report(new ScanProgressInfo
+                var childPath = childInfo.FullName;
+                if (cancellationToken.IsCancellationRequested)
                 {
-                    CurrentPath = childPath,
-                    ProcessedFiles = counters.Files,
-                    ProcessedDirectories = counters.Directories,
-                    LogicalBytes = counters.LogicalBytes,
-                    SizeOnDiskBytes = counters.SizeOnDiskBytes,
-                    CompletedRootChild = child
-                });
+                    node.StatusText = "Отменено";
+                    break;
+                }
+
+                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false);
+                node.AddChild(child);
+                Accumulate(node, child);
+
+                if (isRootChild)
+                {
+                    progress?.Report(new ScanProgressInfo
+                    {
+                        CurrentPath = childPath,
+                        ProcessedFiles = counters.Files,
+                        ProcessedDirectories = counters.Directories,
+                        LogicalBytes = counters.LogicalBytes,
+                        SizeOnDiskBytes = counters.SizeOnDiskBytes,
+                        CompletedRootChild = child
+                    });
+                }
             }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            node.Kind = FileSystemItemKind.NoAccess;
+            node.Risk = RiskLevel.NoAccess;
+            node.StatusText = "Нет доступа";
+            return node;
+        }
+        catch (IOException ex)
+        {
+            node.Kind = FileSystemItemKind.NoAccess;
+            node.Risk = RiskLevel.NoAccess;
+            node.StatusText = ex.Message;
+            return node;
         }
 
         node.SortChildrenBySize();
@@ -184,30 +203,32 @@ public sealed class DiskScanner
         return node;
     }
 
-    private IEnumerable<string> GetDirectoryEntries(string path, ScanOptions options)
+    private IEnumerable<FileSystemInfo> GetDirectoryEntries(string path, ScanOptions options)
     {
         if (!options.IncludeSystemDirectories && _classifier.IsWindowsRoot(path))
         {
-            return _classifier.SafeWindowsChildren.Where(Directory.Exists).ToArray();
+            return _classifier.SafeWindowsChildren
+                .Where(Directory.Exists)
+                .Select(childPath => (FileSystemInfo)new DirectoryInfo(childPath));
         }
 
-        return Directory.EnumerateFileSystemEntries(path, "*", new EnumerationOptions
+        return new DirectoryInfo(path).EnumerateFileSystemInfos("*", new EnumerationOptions
         {
             IgnoreInaccessible = false,
             RecurseSubdirectories = false,
             ReturnSpecialDirectories = false,
             AttributesToSkip = 0
-        }).ToArray();
+        });
     }
 
-    private ScanNode ScanFile(string path, FileAttributes attributes, ScanCounters counters)
+    private ScanNode ScanFile(string path, FileSystemInfo? fileSystemInfo, ScanCounters counters)
     {
         var node = CreateBaseNode(path, FileSystemItemKind.File, _classifier.Classify(path), "Готово");
-        FillMetadata(node, attributes);
+        FillMetadata(node, fileSystemInfo);
 
         try
         {
-            var info = new FileInfo(path);
+            var info = fileSystemInfo as FileInfo ?? new FileInfo(path);
             node.LogicalSize = info.Length;
             node.SizeOnDisk = SystemInterop.GetSizeOnDisk(path, node.LogicalSize);
             node.ModifiedAt = info.LastWriteTime;
@@ -246,16 +267,14 @@ public sealed class DiskScanner
             "Отменено");
     }
 
-    private static void FillMetadata(ScanNode node, FileAttributes attributes)
+    private static void FillMetadata(ScanNode node, FileSystemInfo? fileSystemInfo)
     {
         try
         {
-            FileSystemInfo info = attributes.HasFlag(FileAttributes.Directory)
+            fileSystemInfo ??= Directory.Exists(node.FullPath)
                 ? new DirectoryInfo(node.FullPath)
                 : new FileInfo(node.FullPath);
-
-            node.ModifiedAt = info.LastWriteTime;
-            node.FileId = SystemInterop.GetFileId(node.FullPath);
+            node.ModifiedAt = fileSystemInfo.LastWriteTime;
         }
         catch
         {

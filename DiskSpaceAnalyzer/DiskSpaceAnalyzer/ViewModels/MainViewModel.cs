@@ -593,6 +593,11 @@ public sealed class MainViewModel : ViewModelBase
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(node.FileId))
+        {
+            node.FileId = SystemInterop.GetFileId(node.FullPath);
+        }
+
         var window = new NodeDetailsWindow
         {
             Owner = System.Windows.Application.Current.MainWindow,
