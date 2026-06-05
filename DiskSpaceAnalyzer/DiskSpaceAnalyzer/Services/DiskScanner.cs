@@ -43,13 +43,13 @@ public sealed class DiskScanner
             var root = ScanEntry(normalized, options, counters, progress, cancellationToken, isRootChild: true);
             root.IsExpanded = true;
 
-            if (root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
+            if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
             {
                 _cache.StoreSnapshot(root);
             }
 
             return root;
-        }, cancellationToken);
+        });
     }
 
     private ScanNode ScanEntry(
@@ -60,9 +60,13 @@ public sealed class DiskScanner
         CancellationToken cancellationToken,
         bool isRootChild)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         counters.CurrentPath = path;
         ReportProgress(counters, progress);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CreateCanceledNode(path);
+        }
 
         try
         {
@@ -147,7 +151,12 @@ public sealed class DiskScanner
 
         foreach (var childPath in entries)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                node.StatusText = "Отменено";
+                break;
+            }
+
             var child = ScanEntry(childPath, options, counters, progress, cancellationToken, isRootChild: false);
             node.AddChild(child);
             Accumulate(node, child);
@@ -167,7 +176,11 @@ public sealed class DiskScanner
         }
 
         node.SortChildrenBySize();
-        node.StatusText = "Готово";
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            node.StatusText = "Готово";
+        }
+
         return node;
     }
 
@@ -222,6 +235,15 @@ public sealed class DiskScanner
             Risk = risk,
             StatusText = status
         };
+    }
+
+    private static ScanNode CreateCanceledNode(string path)
+    {
+        return CreateBaseNode(
+            path,
+            Directory.Exists(path) ? FileSystemItemKind.Folder : FileSystemItemKind.File,
+            RiskLevel.Skipped,
+            "Отменено");
     }
 
     private static void FillMetadata(ScanNode node, FileAttributes attributes)

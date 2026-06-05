@@ -389,7 +389,11 @@ public sealed class MainViewModel : ViewModelBase
         {
             foreach (var target in Targets.ToList())
             {
-                _scanCancellation.Token.ThrowIfCancellationRequested();
+                if (_scanCancellation.Token.IsCancellationRequested)
+                {
+                    break;
+                }
+
                 var root = CreatePlaceholderRoot(target.Path);
                 Roots.Add(root);
                 SelectedNode ??= root;
@@ -399,9 +403,16 @@ public sealed class MainViewModel : ViewModelBase
                 var result = await _scanner.ScanAsync(target.Path, options, progress, _scanCancellation.Token);
                 ApplyRootResult(root, result);
                 RebuildSearchResults();
+
+                if (_scanCancellation.Token.IsCancellationRequested)
+                {
+                    break;
+                }
             }
 
-            StatusSummary = "Анализ завершен";
+            StatusSummary = _scanCancellation.Token.IsCancellationRequested
+                ? "Анализ отменен"
+                : "Анализ завершен";
         }
         catch (OperationCanceledException)
         {
@@ -439,7 +450,9 @@ public sealed class MainViewModel : ViewModelBase
             var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, node));
             var result = await _scanner.ScanAsync(node.FullPath, options, progress, _scanCancellation.Token);
             ReplaceNode(node, result);
-            StatusSummary = $"Обновлено: {result.FullPath}";
+            StatusSummary = _scanCancellation.Token.IsCancellationRequested
+                ? "Обновление отменено"
+                : $"Обновлено: {result.FullPath}";
         }
         catch (OperationCanceledException)
         {

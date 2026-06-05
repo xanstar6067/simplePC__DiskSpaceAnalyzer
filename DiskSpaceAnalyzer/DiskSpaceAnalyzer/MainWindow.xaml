@@ -416,6 +416,7 @@
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Header="Крупные элементы" Width="190" DisplayMemberBinding="{Binding DisplayName}" />
+                                <GridViewColumn Header="Тип" Width="82" DisplayMemberBinding="{Binding KindText}" />
                                 <GridViewColumn Header="На диске" Width="94" DisplayMemberBinding="{Binding SizeOnDiskText}" />
                                 <GridViewColumn Header="Риск" Width="74" DisplayMemberBinding="{Binding RiskText}" />
                             </GridView>
