@@ -1,24 +1,22 @@
-﻿using System.Text;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using DiskSpaceAnalyzer.Models;
+using DiskSpaceAnalyzer.ViewModels;
 
-namespace DiskSpaceAnalyzer
+namespace DiskSpaceAnalyzer;
+
+public partial class MainWindow : Window
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
-    public partial class MainWindow : Window
+    public MainWindow()
     {
-        public MainWindow()
+        InitializeComponent();
+        DataContext = new MainViewModel();
+    }
+
+    private void ResultsTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (DataContext is MainViewModel viewModel)
         {
-            InitializeComponent();
+            viewModel.SelectedNode = e.NewValue as ScanNode;
         }
     }
 }

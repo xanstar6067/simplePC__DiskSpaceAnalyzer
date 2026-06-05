@@ -1,0 +1,83 @@
+<Window x:Class="DiskSpaceAnalyzer.Views.NodeDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Сведения об объекте"
+        Icon="/App.ico"
+        SizeToContent="WidthAndHeight"
+        MinWidth="520"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Window.Resources>
+        <Style x:Key="DetailsLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#5B6470" />
+            <Setter Property="Margin" Value="0,0,14,8" />
+        </Style>
+        <Style x:Key="DetailsValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#17202A" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+    </Window.Resources>
+    <Border Padding="22" Background="#FFFFFFFF">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel>
+                <TextBlock Text="{Binding DisplayName}" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding FullPath}" Foreground="#5B6470" TextWrapping="Wrap" Margin="0,4,0,18" />
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="150" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Text="Тип" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Column="1" Text="{Binding KindText}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="1" Text="Размер" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding LogicalSizeText}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="2" Text="На диске" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SizeOnDiskText}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="3" Text="Файлов внутри" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding FileCount}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="4" Text="Папок внутри" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding DirectoryCount}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="5" Text="Риск" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding RiskText}" Foreground="{Binding RiskBrush}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="6" Text="Статус" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding StatusText}" Style="{StaticResource DetailsValue}" />
+
+                    <TextBlock Grid.Row="7" Text="File ID" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding FileId}" Style="{StaticResource DetailsValue}" TextWrapping="Wrap" />
+                </Grid>
+            </StackPanel>
+
+            <Button Grid.Row="1"
+                    Content="Закрыть"
+                    IsDefault="True"
+                    MinWidth="96"
+                    Padding="14,7"
+                    Margin="0,22,0,0"
+                    HorizontalAlignment="Right"
+                    Click="Close_Click" />
+        </Grid>
+    </Border>
+</Window>

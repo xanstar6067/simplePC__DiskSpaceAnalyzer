@@ -1,0 +1,656 @@
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.IO;
+using System.Windows;
+using DiskSpaceAnalyzer.Commands;
+using DiskSpaceAnalyzer.Models;
+using DiskSpaceAnalyzer.Services;
+using DiskSpaceAnalyzer.Views;
+
+namespace DiskSpaceAnalyzer.ViewModels;
+
+public sealed class MainViewModel : ViewModelBase
+{
+    private readonly DriveInfoService _driveInfoService = new();
+    private readonly PathRiskClassifier _classifier = new();
+    private readonly AnalysisCacheService _cache = new();
+    private readonly ShellService _shell = new();
+    private readonly ObservableCollection<string> _excludedPaths = [];
+    private DiskScanner _scanner;
+    private CancellationTokenSource? _scanCancellation;
+    private INotifyCollectionChanged? _selectedChildren;
+    private DriveSummary? _selectedDrive;
+    private AnalysisTarget? _selectedTarget;
+    private ScanNode? _selectedNode;
+    private string _currentPath = "";
+    private string _statusSummary = "Выберите диск или папку для анализа";
+    private string _searchQuery = "";
+    private bool _includeSystemDirectories;
+    private bool _isScanning;
+    private long _processedFiles;
+    private long _processedDirectories;
+    private long _logicalBytes;
+    private long _sizeOnDiskBytes;
+
+    public MainViewModel()
+    {
+        _scanner = new DiskScanner(_classifier, _cache);
+
+        AddDriveCommand = new RelayCommand(_ => AddSelectedDrive(), _ => SelectedDrive is not null && !IsScanning);
+        AddFolderCommand = new RelayCommand(_ => AddFolder(), _ => !IsScanning);
+        RemoveTargetCommand = new RelayCommand(_ => RemoveSelectedTarget(), _ => SelectedTarget is not null && !IsScanning);
+        ClearTargetsCommand = new RelayCommand(_ => Targets.Clear(), _ => Targets.Count > 0 && !IsScanning);
+        StartScanCommand = new RelayCommand(async _ => await StartScanAsync(), _ => !IsScanning);
+        CancelScanCommand = new RelayCommand(_ => CancelScan(), _ => IsScanning);
+        SelectNodeCommand = new RelayCommand(parameter => SelectNode(parameter as ScanNode), parameter => parameter is ScanNode);
+        OpenInExplorerCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.OpenInExplorer), parameter => parameter is ScanNode);
+        OpenLocationCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.OpenLocation), parameter => parameter is ScanNode);
+        CopyPathCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.CopyPath), parameter => parameter is ScanNode);
+        RefreshNodeCommand = new RelayCommand(async parameter => await RefreshNodeAsync(parameter as ScanNode), parameter => parameter is ScanNode && !IsScanning);
+        ExcludeNodeCommand = new RelayCommand(parameter => ExcludeNode(parameter as ScanNode), parameter => parameter is ScanNode && !IsScanning);
+        ShowDetailsCommand = new RelayCommand(parameter => ShowDetails(parameter as ScanNode), parameter => parameter is ScanNode);
+
+        LoadDrives();
+    }
+
+    public ObservableCollection<DriveSummary> AvailableDrives { get; } = [];
+
+    public ObservableCollection<AnalysisTarget> Targets { get; } = [];
+
+    public ObservableCollection<ScanNode> Roots { get; } = [];
+
+    public ObservableCollection<ScanNode> ChartChildren { get; } = [];
+
+    public ObservableCollection<ScanNode> SearchResults { get; } = [];
+
+    public RelayCommand AddDriveCommand { get; }
+
+    public RelayCommand AddFolderCommand { get; }
+
+    public RelayCommand RemoveTargetCommand { get; }
+
+    public RelayCommand ClearTargetsCommand { get; }
+
+    public RelayCommand StartScanCommand { get; }
+
+    public RelayCommand CancelScanCommand { get; }
+
+    public RelayCommand SelectNodeCommand { get; }
+
+    public RelayCommand OpenInExplorerCommand { get; }
+
+    public RelayCommand OpenLocationCommand { get; }
+
+    public RelayCommand CopyPathCommand { get; }
+
+    public RelayCommand RefreshNodeCommand { get; }
+
+    public RelayCommand ExcludeNodeCommand { get; }
+
+    public RelayCommand ShowDetailsCommand { get; }
+
+    public DriveSummary? SelectedDrive
+    {
+        get => _selectedDrive;
+        set
+        {
+            if (SetProperty(ref _selectedDrive, value))
+            {
+                AddDriveCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public AnalysisTarget? SelectedTarget
+    {
+        get => _selectedTarget;
+        set
+        {
+            if (SetProperty(ref _selectedTarget, value))
+            {
+                RemoveTargetCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public ScanNode? SelectedNode
+    {
+        get => _selectedNode;
+        set
+        {
+            if (_selectedNode == value)
+            {
+                return;
+            }
+
+            if (_selectedChildren is not null)
+            {
+                _selectedChildren.CollectionChanged -= SelectedChildrenChanged;
+            }
+
+            _selectedNode = value;
+            _selectedChildren = value?.Children;
+            if (_selectedChildren is not null)
+            {
+                _selectedChildren.CollectionChanged += SelectedChildrenChanged;
+            }
+
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasSelectedNode));
+            OnPropertyChanged(nameof(SelectedNodeSafetyText));
+            RefreshChartChildren();
+        }
+    }
+
+    public string CurrentPath
+    {
+        get => _currentPath;
+        set => SetProperty(ref _currentPath, value);
+    }
+
+    public string StatusSummary
+    {
+        get => _statusSummary;
+        set => SetProperty(ref _statusSummary, value);
+    }
+
+    public string SearchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (SetProperty(ref _searchQuery, value))
+            {
+                RebuildSearchResults();
+            }
+        }
+    }
+
+    public bool IncludeSystemDirectories
+    {
+        get => _includeSystemDirectories;
+        set => SetProperty(ref _includeSystemDirectories, value);
+    }
+
+    public bool IsScanning
+    {
+        get => _isScanning;
+        private set
+        {
+            if (!SetProperty(ref _isScanning, value))
+            {
+                return;
+            }
+
+            AddDriveCommand.RaiseCanExecuteChanged();
+            AddFolderCommand.RaiseCanExecuteChanged();
+            RemoveTargetCommand.RaiseCanExecuteChanged();
+            ClearTargetsCommand.RaiseCanExecuteChanged();
+            StartScanCommand.RaiseCanExecuteChanged();
+            CancelScanCommand.RaiseCanExecuteChanged();
+            RefreshNodeCommand.RaiseCanExecuteChanged();
+            ExcludeNodeCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public long ProcessedFiles
+    {
+        get => _processedFiles;
+        set
+        {
+            if (SetProperty(ref _processedFiles, value))
+            {
+                OnPropertyChanged(nameof(ProcessedFilesText));
+            }
+        }
+    }
+
+    public long ProcessedDirectories
+    {
+        get => _processedDirectories;
+        set
+        {
+            if (SetProperty(ref _processedDirectories, value))
+            {
+                OnPropertyChanged(nameof(ProcessedDirectoriesText));
+            }
+        }
+    }
+
+    public long LogicalBytes
+    {
+        get => _logicalBytes;
+        set
+        {
+            if (SetProperty(ref _logicalBytes, value))
+            {
+                OnPropertyChanged(nameof(LogicalBytesText));
+            }
+        }
+    }
+
+    public long SizeOnDiskBytes
+    {
+        get => _sizeOnDiskBytes;
+        set
+        {
+            if (SetProperty(ref _sizeOnDiskBytes, value))
+            {
+                OnPropertyChanged(nameof(SizeOnDiskBytesText));
+            }
+        }
+    }
+
+    public bool HasSelectedNode => SelectedNode is not null;
+
+    public string ProcessedFilesText => ProcessedFiles.ToString("N0");
+
+    public string ProcessedDirectoriesText => ProcessedDirectories.ToString("N0");
+
+    public string LogicalBytesText => FileSizeFormatter.Format(LogicalBytes);
+
+    public string SizeOnDiskBytesText => FileSizeFormatter.Format(SizeOnDiskBytes);
+
+    public string SelectedNodeSafetyText => SelectedNode?.Risk switch
+    {
+        RiskLevel.Dangerous => "Это системная область. Удаление файлов отсюда может повредить Windows.",
+        RiskLevel.System => "Системная область: просматривайте осторожно и не удаляйте файлы без уверенности.",
+        _ => ""
+    };
+
+    private void LoadDrives()
+    {
+        AvailableDrives.Clear();
+        foreach (var drive in _driveInfoService.GetReadyDrives())
+        {
+            AvailableDrives.Add(drive);
+        }
+
+        SelectedDrive = AvailableDrives.FirstOrDefault();
+    }
+
+    private void AddSelectedDrive()
+    {
+        if (SelectedDrive is null)
+        {
+            return;
+        }
+
+        AddTarget(SelectedDrive.RootPath, SelectedDrive.StorageKind);
+    }
+
+    private void AddFolder()
+    {
+        var path = _shell.PickFolder();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        AddTarget(path, _driveInfoService.DetectStorageKind(path));
+    }
+
+    private void AddTarget(string path, StorageKind storageKind)
+    {
+        var normalized = PathRiskClassifier.Normalize(path);
+        if (Targets.Any(target => string.Equals(PathRiskClassifier.Normalize(target.Path), normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        var target = new AnalysisTarget { Path = normalized, StorageKind = storageKind };
+        Targets.Add(target);
+        SelectedTarget = target;
+        ClearTargetsCommand.RaiseCanExecuteChanged();
+    }
+
+    private void RemoveSelectedTarget()
+    {
+        if (SelectedTarget is null)
+        {
+            return;
+        }
+
+        Targets.Remove(SelectedTarget);
+        SelectedTarget = Targets.FirstOrDefault();
+        ClearTargetsCommand.RaiseCanExecuteChanged();
+    }
+
+    private async Task StartScanAsync()
+    {
+        if (Targets.Count == 0 && SelectedDrive is not null)
+        {
+            AddSelectedDrive();
+        }
+
+        if (Targets.Count == 0)
+        {
+            StatusSummary = "Добавьте хотя бы один диск или папку";
+            return;
+        }
+
+        if (IncludeSystemDirectories && !ConfirmFullSystemScan())
+        {
+            IncludeSystemDirectories = false;
+            return;
+        }
+
+        IsScanning = true;
+        ResetProgress();
+        Roots.Clear();
+        SearchResults.Clear();
+        ChartChildren.Clear();
+        _scanCancellation = new CancellationTokenSource();
+
+        var options = new ScanOptions
+        {
+            IncludeSystemDirectories = IncludeSystemDirectories,
+            ExcludedPaths = _excludedPaths.ToList()
+        };
+
+        try
+        {
+            foreach (var target in Targets.ToList())
+            {
+                _scanCancellation.Token.ThrowIfCancellationRequested();
+                var root = CreatePlaceholderRoot(target.Path);
+                Roots.Add(root);
+                SelectedNode ??= root;
+                StatusSummary = $"Анализ: {target.Path}";
+
+                var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
+                var result = await _scanner.ScanAsync(target.Path, options, progress, _scanCancellation.Token);
+                ApplyRootResult(root, result);
+                RebuildSearchResults();
+            }
+
+            StatusSummary = "Анализ завершен";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusSummary = "Анализ отменен";
+        }
+        finally
+        {
+            CurrentPath = "";
+            IsScanning = false;
+            _scanCancellation?.Dispose();
+            _scanCancellation = null;
+        }
+    }
+
+    private async Task RefreshNodeAsync(ScanNode? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        var options = new ScanOptions
+        {
+            IncludeSystemDirectories = IncludeSystemDirectories,
+            ExcludedPaths = _excludedPaths.ToList()
+        };
+
+        IsScanning = true;
+        ResetProgress();
+        _scanCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, node));
+            var result = await _scanner.ScanAsync(node.FullPath, options, progress, _scanCancellation.Token);
+            ReplaceNode(node, result);
+            StatusSummary = $"Обновлено: {result.FullPath}";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusSummary = "Обновление отменено";
+        }
+        finally
+        {
+            CurrentPath = "";
+            IsScanning = false;
+            _scanCancellation?.Dispose();
+            _scanCancellation = null;
+        }
+    }
+
+    private void CancelScan()
+    {
+        _scanCancellation?.Cancel();
+    }
+
+    private void ApplyProgress(ScanProgressInfo info, ScanNode root)
+    {
+        if (!string.IsNullOrWhiteSpace(info.CurrentPath))
+        {
+            CurrentPath = info.CurrentPath;
+        }
+
+        ProcessedFiles = info.ProcessedFiles;
+        ProcessedDirectories = info.ProcessedDirectories;
+        LogicalBytes = info.LogicalBytes;
+        SizeOnDiskBytes = info.SizeOnDiskBytes;
+
+        if (!string.IsNullOrWhiteSpace(info.Message))
+        {
+            StatusSummary = info.Message;
+        }
+
+        if (info.CompletedRootChild is not null && !root.Children.Contains(info.CompletedRootChild))
+        {
+            root.AddChild(info.CompletedRootChild);
+            root.LogicalSize += info.CompletedRootChild.LogicalSize;
+            root.SizeOnDisk += info.CompletedRootChild.SizeOnDisk;
+            if (SearchQuery.Length >= 2)
+            {
+                RebuildSearchResults();
+            }
+        }
+    }
+
+    private void ApplyRootResult(ScanNode root, ScanNode result)
+    {
+        root.FullPath = result.FullPath;
+        root.Name = result.Name;
+        root.Kind = result.Kind;
+        root.ModifiedAt = result.ModifiedAt;
+        root.FileId = result.FileId;
+        root.Risk = result.Risk;
+        root.StatusText = result.StatusText;
+        root.LogicalSize = result.LogicalSize;
+        root.SizeOnDisk = result.SizeOnDisk;
+        root.FileCount = result.FileCount;
+        root.DirectoryCount = result.DirectoryCount;
+
+        if (root.Children.Count == 0)
+        {
+            foreach (var child in result.Children)
+            {
+                root.AddChild(child);
+            }
+        }
+        else
+        {
+            root.SortChildrenBySize();
+        }
+
+        root.IsExpanded = true;
+        if (SelectedNode == root)
+        {
+            RefreshChartChildren();
+        }
+    }
+
+    private void ReplaceNode(ScanNode oldNode, ScanNode newNode)
+    {
+        var parent = oldNode.Parent;
+        if (parent is null)
+        {
+            var index = Roots.IndexOf(oldNode);
+            if (index >= 0)
+            {
+                Roots[index] = newNode;
+            }
+        }
+        else
+        {
+            var index = parent.Children.IndexOf(oldNode);
+            if (index >= 0)
+            {
+                newNode.Parent = parent;
+                parent.Children[index] = newNode;
+            }
+        }
+
+        SelectedNode = newNode;
+        RebuildSearchResults();
+    }
+
+    private void ExcludeNode(ScanNode? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        if (!_excludedPaths.Contains(node.FullPath, StringComparer.OrdinalIgnoreCase))
+        {
+            _excludedPaths.Add(node.FullPath);
+        }
+
+        var parent = node.Parent;
+        if (parent is null)
+        {
+            Roots.Remove(node);
+        }
+        else
+        {
+            parent.Children.Remove(node);
+        }
+
+        SelectedNode = parent ?? Roots.FirstOrDefault();
+        StatusSummary = $"Исключено из анализа: {node.FullPath}";
+        RebuildSearchResults();
+    }
+
+    private void ShowDetails(ScanNode? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        var window = new NodeDetailsWindow
+        {
+            Owner = System.Windows.Application.Current.MainWindow,
+            DataContext = node
+        };
+        window.ShowDialog();
+    }
+
+    private static void ExecuteNodeAction(object? parameter, Action<ScanNode> action)
+    {
+        if (parameter is ScanNode node)
+        {
+            action(node);
+        }
+    }
+
+    private void SelectNode(ScanNode? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        SelectedNode = node;
+        node.IsSelected = true;
+    }
+
+    private void SelectedChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        RefreshChartChildren();
+    }
+
+    private void RefreshChartChildren()
+    {
+        ChartChildren.Clear();
+        if (SelectedNode is null)
+        {
+            return;
+        }
+
+        foreach (var child in SelectedNode.Children.OrderByDescending(node => node.SizeOnDisk).Take(20))
+        {
+            ChartChildren.Add(child);
+        }
+
+        OnPropertyChanged(nameof(SelectedNodeSafetyText));
+    }
+
+    private void RebuildSearchResults()
+    {
+        SearchResults.Clear();
+        var query = SearchQuery.Trim();
+        if (query.Length < 2)
+        {
+            return;
+        }
+
+        foreach (var node in Roots.SelectMany(Flatten).Where(node =>
+                     node.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                     node.FullPath.Contains(query, StringComparison.OrdinalIgnoreCase)).Take(500))
+        {
+            SearchResults.Add(node);
+        }
+    }
+
+    private static IEnumerable<ScanNode> Flatten(ScanNode node)
+    {
+        yield return node;
+        foreach (var child in node.Children)
+        {
+            foreach (var descendant in Flatten(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static ScanNode CreatePlaceholderRoot(string path)
+    {
+        var root = new ScanNode
+        {
+            FullPath = path,
+            Name = Path.GetPathRoot(path) == path ? path : Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            Kind = Directory.Exists(path) ? FileSystemItemKind.Folder : FileSystemItemKind.File,
+            Risk = RiskLevel.Safe,
+            StatusText = "В очереди"
+        };
+
+        root.IsExpanded = true;
+        return root;
+    }
+
+    private void ResetProgress()
+    {
+        ProcessedFiles = 0;
+        ProcessedDirectories = 0;
+        LogicalBytes = 0;
+        SizeOnDiskBytes = 0;
+        CurrentPath = "";
+    }
+
+    private static bool ConfirmFullSystemScan()
+    {
+        var result = System.Windows.MessageBox.Show(
+            "Полный анализ системных каталогов может занять больше времени и показать файлы, которые не рекомендуется удалять вручную.",
+            "Полный анализ",
+            System.Windows.MessageBoxButton.OKCancel,
+            System.Windows.MessageBoxImage.Warning);
+
+        return result == System.Windows.MessageBoxResult.OK;
+    }
+}
