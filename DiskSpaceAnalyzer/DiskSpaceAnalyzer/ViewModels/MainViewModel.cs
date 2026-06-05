@@ -17,16 +17,19 @@ public sealed class MainViewModel : ViewModelBase
     private readonly AnalysisCacheService _cache = new();
     private readonly ShellService _shell = new();
     private readonly ObservableCollection<string> _excludedPaths = [];
+    private readonly Stack<ScanNode> _navigationHistory = new();
     private DiskScanner _scanner;
     private CancellationTokenSource? _scanCancellation;
     private INotifyCollectionChanged? _selectedChildren;
     private DriveSummary? _selectedDrive;
     private AnalysisTarget? _selectedTarget;
     private ScanNode? _selectedNode;
+    private ScanNode? _selectedChartNode;
     private string _currentPath = "";
     private string _statusSummary = "Выберите диск или папку для анализа";
     private string _searchQuery = "";
     private bool _includeSystemDirectories;
+    private bool _ignoreCache;
     private bool _isScanning;
     private bool _chartRefreshQueued;
     private bool _isRefreshingChartChildren;
@@ -45,13 +48,15 @@ public sealed class MainViewModel : ViewModelBase
         ClearTargetsCommand = new RelayCommand(_ => Targets.Clear(), _ => Targets.Count > 0 && !IsScanning);
         StartScanCommand = new RelayCommand(async _ => await StartScanAsync(), _ => !IsScanning);
         CancelScanCommand = new RelayCommand(_ => CancelScan(), _ => IsScanning);
-        SelectNodeCommand = new RelayCommand(parameter => SelectNode(parameter as ScanNode), parameter => parameter is ScanNode);
+        SelectNodeCommand = new RelayCommand(parameter => NavigateToNode(parameter as ScanNode, rememberCurrent: true), parameter => parameter is ScanNode);
+        NavigateToChartNodeCommand = new RelayCommand(_ => NavigateToNode(SelectedChartNode, rememberCurrent: true), _ => SelectedChartNode is not null);
+        NavigateBackCommand = new RelayCommand(_ => NavigateBack(), _ => _navigationHistory.Count > 0);
         OpenInExplorerCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.OpenInExplorer), parameter => parameter is ScanNode);
-        OpenLocationCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.OpenLocation), parameter => parameter is ScanNode);
         CopyPathCommand = new RelayCommand(parameter => ExecuteNodeAction(parameter, _shell.CopyPath), parameter => parameter is ScanNode);
         RefreshNodeCommand = new RelayCommand(async parameter => await RefreshNodeAsync(parameter as ScanNode), parameter => parameter is ScanNode && !IsScanning);
         ExcludeNodeCommand = new RelayCommand(parameter => ExcludeNode(parameter as ScanNode), parameter => parameter is ScanNode && !IsScanning);
         ShowDetailsCommand = new RelayCommand(parameter => ShowDetails(parameter as ScanNode), parameter => parameter is ScanNode);
+        ClearCacheCommand = new RelayCommand(_ => ClearCache(), _ => !IsScanning);
 
         LoadDrives();
     }
@@ -80,9 +85,11 @@ public sealed class MainViewModel : ViewModelBase
 
     public RelayCommand SelectNodeCommand { get; }
 
-    public RelayCommand OpenInExplorerCommand { get; }
+    public RelayCommand NavigateToChartNodeCommand { get; }
 
-    public RelayCommand OpenLocationCommand { get; }
+    public RelayCommand NavigateBackCommand { get; }
+
+    public RelayCommand OpenInExplorerCommand { get; }
 
     public RelayCommand CopyPathCommand { get; }
 
@@ -91,6 +98,8 @@ public sealed class MainViewModel : ViewModelBase
     public RelayCommand ExcludeNodeCommand { get; }
 
     public RelayCommand ShowDetailsCommand { get; }
+
+    public RelayCommand ClearCacheCommand { get; }
 
     public DriveSummary? SelectedDrive
     {
@@ -150,6 +159,18 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    public ScanNode? SelectedChartNode
+    {
+        get => _selectedChartNode;
+        set
+        {
+            if (SetProperty(ref _selectedChartNode, value))
+            {
+                NavigateToChartNodeCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
     public string CurrentPath
     {
         get => _currentPath;
@@ -180,6 +201,12 @@ public sealed class MainViewModel : ViewModelBase
         set => SetProperty(ref _includeSystemDirectories, value);
     }
 
+    public bool IgnoreCache
+    {
+        get => _ignoreCache;
+        set => SetProperty(ref _ignoreCache, value);
+    }
+
     public bool IsScanning
     {
         get => _isScanning;
@@ -198,6 +225,7 @@ public sealed class MainViewModel : ViewModelBase
             CancelScanCommand.RaiseCanExecuteChanged();
             RefreshNodeCommand.RaiseCanExecuteChanged();
             ExcludeNodeCommand.RaiseCanExecuteChanged();
+            ClearCacheCommand.RaiseCanExecuteChanged();
         }
     }
 
@@ -353,6 +381,7 @@ public sealed class MainViewModel : ViewModelBase
         var options = new ScanOptions
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
+            IgnoreCache = IgnoreCache,
             ExcludedPaths = _excludedPaths.ToList()
         };
 
@@ -397,6 +426,7 @@ public sealed class MainViewModel : ViewModelBase
         var options = new ScanOptions
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
+            IgnoreCache = true,
             ExcludedPaths = _excludedPaths.ToList()
         };
 
@@ -558,6 +588,12 @@ public sealed class MainViewModel : ViewModelBase
         window.ShowDialog();
     }
 
+    private void ClearCache()
+    {
+        _cache.Clear();
+        StatusSummary = "Кеш анализа очищен";
+    }
+
     private static void ExecuteNodeAction(object? parameter, Action<ScanNode> action)
     {
         if (parameter is ScanNode node)
@@ -566,15 +602,41 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
-    private void SelectNode(ScanNode? node)
+    private void NavigateToNode(ScanNode? node, bool rememberCurrent)
     {
         if (node is null)
         {
             return;
         }
 
+        if (rememberCurrent && SelectedNode is not null && SelectedNode != node)
+        {
+            _navigationHistory.Push(SelectedNode);
+        }
+
         SelectedNode = node;
         node.IsSelected = true;
+        SelectedChartNode = null;
+        NavigateBackCommand.RaiseCanExecuteChanged();
+    }
+
+    private void NavigateBack()
+    {
+        while (_navigationHistory.Count > 0)
+        {
+            var node = _navigationHistory.Pop();
+            if (node == SelectedNode)
+            {
+                continue;
+            }
+
+            SelectedNode = node;
+            node.IsSelected = true;
+            SelectedChartNode = null;
+            break;
+        }
+
+        NavigateBackCommand.RaiseCanExecuteChanged();
     }
 
     private void SelectedChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -636,6 +698,11 @@ public sealed class MainViewModel : ViewModelBase
         finally
         {
             _isRefreshingChartChildren = false;
+        }
+
+        if (SelectedChartNode is not null && !children.Contains(SelectedChartNode))
+        {
+            SelectedChartNode = null;
         }
 
         OnPropertyChanged(nameof(SelectedNodeSafetyText));

@@ -22,23 +22,12 @@ public sealed class ShellService
 
     public void OpenInExplorer(ScanNode node)
     {
-        if (Directory.Exists(node.FullPath))
-        {
-            StartExplorer($"\"{node.FullPath}\"");
-            return;
-        }
-
-        if (File.Exists(node.FullPath))
+        if (Directory.Exists(node.FullPath) || File.Exists(node.FullPath))
         {
             StartExplorer($"/select,\"{node.FullPath}\"");
             return;
         }
 
-        OpenLocation(node);
-    }
-
-    public void OpenLocation(ScanNode node)
-    {
         var location = Directory.Exists(node.FullPath)
             ? node.FullPath
             : Path.GetDirectoryName(node.FullPath);

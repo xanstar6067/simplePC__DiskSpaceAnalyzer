@@ -7,7 +7,7 @@
         xmlns:converters="clr-namespace:DiskSpaceAnalyzer.Converters"
         xmlns:models="clr-namespace:DiskSpaceAnalyzer.Models"
         mc:Ignorable="d"
-        Title="simplePC Disk Space Analyzer"
+        Title="Анализатор дискового пространства simplePC"
         Icon="/App.ico"
         MinHeight="720"
         MinWidth="1120"
@@ -155,11 +155,8 @@
             <Setter Property="ContextMenu">
                 <Setter.Value>
                     <ContextMenu>
-                        <MenuItem Header="Открыть в Проводнике"
+                        <MenuItem Header="Показать в Проводнике"
                                   Command="{Binding PlacementTarget.Tag.OpenInExplorerCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                        <MenuItem Header="Открыть расположение"
-                                  Command="{Binding PlacementTarget.Tag.OpenLocationCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                   CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                         <MenuItem Header="Копировать путь"
                                   Command="{Binding PlacementTarget.Tag.CopyPathCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
@@ -213,10 +210,18 @@
                             Command="{Binding AddFolderCommand}" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right">
                     <CheckBox Content="Сканировать системные каталоги полностью"
                               VerticalAlignment="Center"
                               IsChecked="{Binding IncludeSystemDirectories}" />
+                    <CheckBox Content="Игнорировать кеш при сканировании"
+                              Margin="0,6,0,0"
+                              IsChecked="{Binding IgnoreCache}" />
+                    <Button Content="Очистить кеш"
+                            MinWidth="126"
+                            Margin="0,8,0,0"
+                            HorizontalAlignment="Right"
+                            Command="{Binding ClearCacheCommand}" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="12,0,0,0">
@@ -342,7 +347,22 @@
                         <RowDefinition Height="0.8*" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Text="{Binding SelectedNode.DisplayName}" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
+                            <Button Content="Назад"
+                                    MinWidth="76"
+                                    Command="{Binding NavigateBackCommand}" />
+                            <Button Content="Перейти"
+                                    MinWidth="76"
+                                    Margin="8,0,0,0"
+                                    Command="{Binding NavigateToChartNodeCommand}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding SelectedNode.DisplayName}"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center" />
+                    </DockPanel>
 
                     <controls:DonutChart Grid.Row="1"
                                          ItemsSource="{Binding ChartChildren}"
@@ -362,8 +382,37 @@
 
                     <ListView Grid.Row="3"
                               ItemsSource="{Binding ChartChildren}"
-                              SelectedItem="{Binding SelectedNode}"
+                              SelectedItem="{Binding SelectedChartNode}"
+                              MouseDoubleClick="ChartItems_MouseDoubleClick"
                               BorderBrush="#D7DDE5">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Setter Property="ContextMenu">
+                                    <Setter.Value>
+                                        <ContextMenu>
+                                            <MenuItem Header="Показать в Проводнике"
+                                                      Command="{Binding PlacementTarget.Tag.OpenInExplorerCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <MenuItem Header="Копировать путь"
+                                                      Command="{Binding PlacementTarget.Tag.CopyPathCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <Separator />
+                                            <MenuItem Header="Обновить эту папку"
+                                                      Command="{Binding PlacementTarget.Tag.RefreshNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <MenuItem Header="Исключить из анализа"
+                                                      Command="{Binding PlacementTarget.Tag.ExcludeNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <Separator />
+                                            <MenuItem Header="Сведения"
+                                                      Command="{Binding PlacementTarget.Tag.ShowDetailsCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                        </ContextMenu>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListView.ItemContainerStyle>
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Header="Крупные элементы" Width="190" DisplayMemberBinding="{Binding DisplayName}" />

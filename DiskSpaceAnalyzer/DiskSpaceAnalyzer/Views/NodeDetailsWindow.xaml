@@ -65,7 +65,7 @@
                     <TextBlock Grid.Row="6" Text="Статус" Style="{StaticResource DetailsLabel}" />
                     <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding StatusText}" Style="{StaticResource DetailsValue}" />
 
-                    <TextBlock Grid.Row="7" Text="File ID" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="7" Text="ID файла" Style="{StaticResource DetailsLabel}" />
                     <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding FileId}" Style="{StaticResource DetailsValue}" TextWrapping="Wrap" />
                 </Grid>
             </StackPanel>

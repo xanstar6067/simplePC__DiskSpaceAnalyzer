@@ -24,7 +24,7 @@ public sealed class DiskScanner
         return Task.Run(() =>
         {
             var normalized = PathRiskClassifier.Normalize(path);
-            if (_cache.TryRestoreSnapshot(normalized, out var cached) && cached is not null)
+            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, out var cached) && cached is not null)
             {
                 AddCachedCounters(cached, out var files, out var directories, out var logical, out var onDisk);
                 progress?.Report(new ScanProgressInfo

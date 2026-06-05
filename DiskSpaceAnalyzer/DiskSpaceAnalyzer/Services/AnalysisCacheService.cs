@@ -63,6 +63,24 @@ public sealed class AnalysisCacheService
         Save();
     }
 
+    public void Clear()
+    {
+        EnsureLoaded();
+        _snapshots.Clear();
+
+        try
+        {
+            if (File.Exists(_cachePath))
+            {
+                File.Delete(_cachePath);
+            }
+        }
+        catch
+        {
+            Save();
+        }
+    }
+
     private void EnsureLoaded()
     {
         if (_loaded)
