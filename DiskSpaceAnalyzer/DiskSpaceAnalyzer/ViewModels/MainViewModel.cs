@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
 using System.Windows;
+using System.Windows.Threading;
 using DiskSpaceAnalyzer.Commands;
 using DiskSpaceAnalyzer.Models;
 using DiskSpaceAnalyzer.Services;
@@ -27,6 +28,8 @@ public sealed class MainViewModel : ViewModelBase
     private string _searchQuery = "";
     private bool _includeSystemDirectories;
     private bool _isScanning;
+    private bool _chartRefreshQueued;
+    private bool _isRefreshingChartChildren;
     private long _processedFiles;
     private long _processedDirectories;
     private long _logicalBytes;
@@ -118,6 +121,11 @@ public sealed class MainViewModel : ViewModelBase
         get => _selectedNode;
         set
         {
+            if (value is null && _isRefreshingChartChildren)
+            {
+                return;
+            }
+
             if (_selectedNode == value)
             {
                 return;
@@ -138,7 +146,7 @@ public sealed class MainViewModel : ViewModelBase
             OnPropertyChanged();
             OnPropertyChanged(nameof(HasSelectedNode));
             OnPropertyChanged(nameof(SelectedNodeSafetyText));
-            RefreshChartChildren();
+            QueueChartRefresh();
         }
     }
 
@@ -339,7 +347,7 @@ public sealed class MainViewModel : ViewModelBase
         ResetProgress();
         Roots.Clear();
         SearchResults.Clear();
-        ChartChildren.Clear();
+        ClearChartChildren();
         _scanCancellation = new CancellationTokenSource();
 
         var options = new ScanOptions
@@ -479,7 +487,7 @@ public sealed class MainViewModel : ViewModelBase
         root.IsExpanded = true;
         if (SelectedNode == root)
         {
-            RefreshChartChildren();
+            QueueChartRefresh();
         }
     }
 
@@ -571,20 +579,63 @@ public sealed class MainViewModel : ViewModelBase
 
     private void SelectedChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        RefreshChartChildren();
+        QueueChartRefresh();
     }
 
-    private void RefreshChartChildren()
+    private void QueueChartRefresh()
     {
-        ChartChildren.Clear();
-        if (SelectedNode is null)
+        if (_chartRefreshQueued)
         {
             return;
         }
 
-        foreach (var child in SelectedNode.Children.OrderByDescending(node => node.SizeOnDisk).Take(20))
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
         {
-            ChartChildren.Add(child);
+            RefreshChartChildren();
+            return;
+        }
+
+        _chartRefreshQueued = true;
+        dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            _chartRefreshQueued = false;
+            RefreshChartChildren();
+        }));
+    }
+
+    private void ClearChartChildren()
+    {
+        _isRefreshingChartChildren = true;
+        try
+        {
+            ChartChildren.Clear();
+        }
+        finally
+        {
+            _isRefreshingChartChildren = false;
+        }
+    }
+
+    private void RefreshChartChildren()
+    {
+        var children = SelectedNode?.Children
+            .OrderByDescending(node => node.SizeOnDisk)
+            .Take(20)
+            .ToList() ?? [];
+
+        _isRefreshingChartChildren = true;
+        try
+        {
+            ChartChildren.Clear();
+            foreach (var child in children)
+            {
+                ChartChildren.Add(child);
+            }
+        }
+        finally
+        {
+            _isRefreshingChartChildren = false;
         }
 
         OnPropertyChanged(nameof(SelectedNodeSafetyText));
