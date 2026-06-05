@@ -7,7 +7,6 @@ namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
-    private const int MaxCachedNodesPerSnapshot = 50000;
     private readonly string _cacheDirectory;
     private readonly string _legacyCachePath;
     private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
@@ -49,15 +48,6 @@ public sealed class AnalysisCacheService
         var normalized = PathRiskClassifier.Normalize(node.FullPath);
         var cachePath = GetCachePath(normalized);
         var snapshots = EnsureLoaded(cachePath);
-        if (CountNodes(node) > MaxCachedNodesPerSnapshot)
-        {
-            if (snapshots.Remove(normalized))
-            {
-                Save(cachePath, snapshots);
-            }
-
-            return;
-        }
 
         var snapshot = new CachedSnapshot
         {
@@ -228,21 +218,6 @@ public sealed class AnalysisCacheService
         {
             return new CachedMetadata { Exists = false };
         }
-    }
-
-    private static int CountNodes(ScanNode node)
-    {
-        var count = 1;
-        foreach (var child in node.Children)
-        {
-            count += CountNodes(child);
-            if (count > MaxCachedNodesPerSnapshot)
-            {
-                return count;
-            }
-        }
-
-        return count;
     }
 
     private static CachedScanNode FromNode(ScanNode node)
