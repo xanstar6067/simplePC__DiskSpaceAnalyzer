@@ -232,8 +232,6 @@
                               IsChecked="{Binding IgnoreCache}" />
                     <Button Content="Очистить кеш"
                             MinWidth="126"
-                            Margin="0,8,0,0"
-                            HorizontalAlignment="Right"
                             Command="{Binding ClearCacheCommand}" />
                 </StackPanel>
 
