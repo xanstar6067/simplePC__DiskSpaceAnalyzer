@@ -275,6 +275,10 @@
 
         <Border Grid.Row="1" Style="{StaticResource Panel}" Padding="14" Margin="0,12,0,12">
             <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="150" />
                     <ColumnDefinition Width="150" />
@@ -303,6 +307,18 @@
                     <TextBlock Text="{Binding StatusSummary}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                     <TextBlock Text="{Binding CurrentPath}" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
                 </StackPanel>
+
+                <Border Grid.Row="1"
+                        Grid.ColumnSpan="5"
+                        Visibility="{Binding HasCacheWarning, Converter={StaticResource BoolToVisibility}}"
+                        Background="#FFF7E6"
+                        BorderBrush="#E1B773"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10"
+                        Margin="0,12,0,0">
+                    <TextBlock Text="{Binding CacheWarningText}" TextWrapping="Wrap" Foreground="#7B4B00" />
+                </Border>
             </Grid>
         </Border>
 

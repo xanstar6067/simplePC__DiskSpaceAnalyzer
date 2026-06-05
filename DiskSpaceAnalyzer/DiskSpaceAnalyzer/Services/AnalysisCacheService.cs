@@ -47,14 +47,20 @@ public sealed class AnalysisCacheService
     {
         EnsureLoaded();
 
+        var normalized = PathRiskClassifier.Normalize(node.FullPath);
         if (CountNodes(node) > MaxCachedNodesPerSnapshot)
         {
+            if (_snapshots.Remove(normalized))
+            {
+                Save();
+            }
+
             return;
         }
 
         var snapshot = new CachedSnapshot
         {
-            Path = PathRiskClassifier.Normalize(node.FullPath),
+            Path = normalized,
             CachedAt = DateTimeOffset.UtcNow,
             AnalyzeSizeOnDisk = analyzeSizeOnDisk,
             Node = FromNode(node),

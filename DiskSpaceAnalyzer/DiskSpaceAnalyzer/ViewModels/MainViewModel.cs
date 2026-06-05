@@ -25,6 +25,7 @@ public sealed class MainViewModel : ViewModelBase
     private AnalysisTarget? _selectedTarget;
     private ScanNode? _selectedNode;
     private ScanNode? _selectedChartNode;
+    private string _cacheWarningText = "";
     private string _currentPath = "";
     private string _statusSummary = "Выберите диск или папку для анализа";
     private string _searchQuery = "";
@@ -46,7 +47,7 @@ public sealed class MainViewModel : ViewModelBase
         AddDriveCommand = new RelayCommand(_ => AddSelectedDrive(), _ => SelectedDrive is not null && !IsScanning);
         AddFolderCommand = new RelayCommand(_ => AddFolder(), _ => !IsScanning);
         RemoveTargetCommand = new RelayCommand(_ => RemoveSelectedTarget(), _ => SelectedTarget is not null && !IsScanning);
-        ClearTargetsCommand = new RelayCommand(_ => Targets.Clear(), _ => Targets.Count > 0 && !IsScanning);
+        ClearTargetsCommand = new RelayCommand(_ => ClearTargets(), _ => Targets.Count > 0 && !IsScanning);
         StartScanCommand = new RelayCommand(async _ => await StartScanAsync(), _ => !IsScanning);
         CancelScanCommand = new RelayCommand(_ => CancelScan(), _ => IsScanning);
         SelectNodeCommand = new RelayCommand(parameter => NavigateToNode(parameter as ScanNode, rememberCurrent: true), parameter => parameter is ScanNode);
@@ -110,6 +111,10 @@ public sealed class MainViewModel : ViewModelBase
             if (SetProperty(ref _selectedDrive, value))
             {
                 AddDriveCommand.RaiseCanExecuteChanged();
+                if (value is not null && !IsScanning)
+                {
+                    TryShowCachedScan(value.RootPath);
+                }
             }
         }
     }
@@ -183,6 +188,20 @@ public sealed class MainViewModel : ViewModelBase
         get => _statusSummary;
         set => SetProperty(ref _statusSummary, value);
     }
+
+    public string CacheWarningText
+    {
+        get => _cacheWarningText;
+        set
+        {
+            if (SetProperty(ref _cacheWarningText, value))
+            {
+                OnPropertyChanged(nameof(HasCacheWarning));
+            }
+        }
+    }
+
+    public bool HasCacheWarning => !string.IsNullOrWhiteSpace(CacheWarningText);
 
     public string SearchQuery
     {
@@ -345,6 +364,35 @@ public sealed class MainViewModel : ViewModelBase
         Targets.Add(target);
         SelectedTarget = target;
         ClearTargetsCommand.RaiseCanExecuteChanged();
+        TryShowCachedScan(normalized);
+    }
+
+    private bool TryShowCachedScan(string path)
+    {
+        if (IgnoreCache || !_cache.TryRestoreSnapshot(path, AnalyzeSizeOnDisk, out var cached) || cached is null)
+        {
+            return false;
+        }
+
+        Roots.Clear();
+        SearchResults.Clear();
+        ClearChartChildren();
+
+        cached.IsExpanded = true;
+        Roots.Add(cached);
+        SelectedNode = cached;
+        SelectedChartNode = null;
+
+        ProcessedFiles = cached.Kind == FileSystemItemKind.File ? 1 : cached.FileCount;
+        ProcessedDirectories = cached.Kind == FileSystemItemKind.Folder ? 1 + cached.DirectoryCount : cached.DirectoryCount;
+        LogicalBytes = cached.LogicalSize;
+        SizeOnDiskBytes = cached.SizeOnDisk;
+        CurrentPath = cached.FullPath;
+
+        ApplyCacheWarning(cached.FullPath);
+        RebuildSearchResults();
+        QueueChartRefresh();
+        return true;
     }
 
     private void RemoveSelectedTarget()
@@ -356,6 +404,14 @@ public sealed class MainViewModel : ViewModelBase
 
         Targets.Remove(SelectedTarget);
         SelectedTarget = Targets.FirstOrDefault();
+        ClearTargetsCommand.RaiseCanExecuteChanged();
+    }
+
+    private void ClearTargets()
+    {
+        Targets.Clear();
+        SelectedTarget = null;
+        CacheWarningText = "";
         ClearTargetsCommand.RaiseCanExecuteChanged();
     }
 
@@ -380,6 +436,7 @@ public sealed class MainViewModel : ViewModelBase
 
         IsScanning = true;
         ResetProgress();
+        CacheWarningText = "";
         Roots.Clear();
         SearchResults.Clear();
         ClearChartChildren();
@@ -410,6 +467,7 @@ public sealed class MainViewModel : ViewModelBase
                 var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
                 var result = await _scanner.ScanAsync(target.Path, options, progress, _scanCancellation.Token);
                 ApplyRootResult(root, result);
+                ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
                 RebuildSearchResults();
 
                 if (_scanCancellation.Token.IsCancellationRequested)
@@ -452,6 +510,7 @@ public sealed class MainViewModel : ViewModelBase
 
         IsScanning = true;
         ResetProgress();
+        CacheWarningText = "";
         _scanCancellation = new CancellationTokenSource();
 
         try
@@ -543,6 +602,21 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    private void ApplyCacheWarningIfNeeded(string path, string statusText)
+    {
+        if (statusText.Contains("кеш", StringComparison.OrdinalIgnoreCase) ||
+            statusText.Contains("кэш", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyCacheWarning(path);
+        }
+    }
+
+    private void ApplyCacheWarning(string path)
+    {
+        StatusSummary = $"Загружен кэшированный скан: {path}";
+        CacheWarningText = "Показан кэшированный скан. Данные могли устареть; для точного результата включите «Игнорировать кэш при сканировании» и запустите сканирование заново.";
+    }
+
     private void ReplaceNode(ScanNode oldNode, ScanNode newNode)
     {
         var parent = oldNode.Parent;
@@ -618,6 +692,7 @@ public sealed class MainViewModel : ViewModelBase
     private void ClearCache()
     {
         _cache.Clear();
+        CacheWarningText = "";
         StatusSummary = "Кеш анализа очищен";
     }
 
