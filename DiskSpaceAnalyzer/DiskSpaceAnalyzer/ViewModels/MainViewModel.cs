@@ -23,12 +23,11 @@ public sealed class MainViewModel : ViewModelBase
     private CancellationTokenSource? _scanCancellation;
     private INotifyCollectionChanged? _selectedChildren;
     private DriveSummary? _selectedDrive;
-    private AnalysisTarget? _selectedTarget;
     private ScanNode? _selectedNode;
     private ScanNode? _selectedChartNode;
     private string _cacheWarningText = "";
     private string _currentPath = "";
-    private string _statusSummary = "Выберите диск или папку для анализа";
+    private string _statusSummary = "Выберите диск для анализа";
     private string _searchQuery = "";
     private bool _includeSystemDirectories;
     private bool _ignoreCache;
@@ -45,10 +44,6 @@ public sealed class MainViewModel : ViewModelBase
     {
         _scanner = new DiskScanner(_classifier, _cache);
 
-        AddDriveCommand = new RelayCommand(_ => AddSelectedDrive(), _ => SelectedDrive is not null && !IsScanning);
-        AddFolderCommand = new RelayCommand(_ => AddFolder(), _ => !IsScanning);
-        RemoveTargetCommand = new RelayCommand(_ => RemoveSelectedTarget(), _ => SelectedTarget is not null && !IsScanning);
-        ClearTargetsCommand = new RelayCommand(_ => ClearTargets(), _ => Targets.Count > 0 && !IsScanning);
         StartScanCommand = new RelayCommand(async _ => await StartScanAsync(), _ => !IsScanning);
         CancelScanCommand = new RelayCommand(_ => CancelScan(), _ => IsScanning);
         SelectNodeCommand = new RelayCommand(parameter => NavigateToNode(parameter as ScanNode, rememberCurrent: true), parameter => parameter is ScanNode);
@@ -73,21 +68,11 @@ public sealed class MainViewModel : ViewModelBase
 
     public ObservableCollection<DriveSummary> AvailableDrives { get; } = [];
 
-    public ObservableCollection<AnalysisTarget> Targets { get; } = [];
-
     public ObservableCollection<ScanNode> Roots { get; } = [];
 
     public ObservableCollection<ScanNode> ChartChildren { get; } = [];
 
     public ObservableCollection<ScanNode> SearchResults { get; } = [];
-
-    public RelayCommand AddDriveCommand { get; }
-
-    public RelayCommand AddFolderCommand { get; }
-
-    public RelayCommand RemoveTargetCommand { get; }
-
-    public RelayCommand ClearTargetsCommand { get; }
 
     public RelayCommand StartScanCommand { get; }
 
@@ -118,7 +103,6 @@ public sealed class MainViewModel : ViewModelBase
         {
             if (SetProperty(ref _selectedDrive, value))
             {
-                AddDriveCommand.RaiseCanExecuteChanged();
                 if (value is not null && !IsScanning)
                 {
                     if (!TryShowCachedScan(value.RootPath))
@@ -128,20 +112,8 @@ public sealed class MainViewModel : ViewModelBase
                 }
                 else if (value is null && !IsScanning)
                 {
-                    ClearAnalysisView("Выберите диск или папку для анализа");
+                    ClearAnalysisView("Выберите диск для анализа");
                 }
-            }
-        }
-    }
-
-    public AnalysisTarget? SelectedTarget
-    {
-        get => _selectedTarget;
-        set
-        {
-            if (SetProperty(ref _selectedTarget, value))
-            {
-                RemoveTargetCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -258,10 +230,6 @@ public sealed class MainViewModel : ViewModelBase
                 return;
             }
 
-            AddDriveCommand.RaiseCanExecuteChanged();
-            AddFolderCommand.RaiseCanExecuteChanged();
-            RemoveTargetCommand.RaiseCanExecuteChanged();
-            ClearTargetsCommand.RaiseCanExecuteChanged();
             StartScanCommand.RaiseCanExecuteChanged();
             CancelScanCommand.RaiseCanExecuteChanged();
             RefreshNodeCommand.RaiseCanExecuteChanged();
@@ -367,47 +335,10 @@ public sealed class MainViewModel : ViewModelBase
         {
             _selectedDrive = nextSelection;
             OnPropertyChanged(nameof(SelectedDrive));
-            AddDriveCommand.RaiseCanExecuteChanged();
             return;
         }
 
         SelectedDrive = selectFirst ? AvailableDrives.FirstOrDefault() : null;
-    }
-
-    private void AddSelectedDrive()
-    {
-        if (SelectedDrive is null)
-        {
-            return;
-        }
-
-        AddTarget(SelectedDrive.RootPath, SelectedDrive.StorageKind);
-    }
-
-    private void AddFolder()
-    {
-        var path = _shell.PickFolder();
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        AddTarget(path, _driveInfoService.DetectStorageKind(path));
-    }
-
-    private void AddTarget(string path, StorageKind storageKind)
-    {
-        var normalized = PathRiskClassifier.Normalize(path);
-        if (Targets.Any(target => string.Equals(PathRiskClassifier.Normalize(target.Path), normalized, StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-
-        var target = new AnalysisTarget { Path = normalized, StorageKind = storageKind };
-        Targets.Add(target);
-        SelectedTarget = target;
-        ClearTargetsCommand.RaiseCanExecuteChanged();
-        TryShowCachedScan(normalized);
     }
 
     private bool TryShowCachedScan(string path)
@@ -452,36 +383,11 @@ public sealed class MainViewModel : ViewModelBase
         StatusSummary = statusSummary;
     }
 
-    private void RemoveSelectedTarget()
-    {
-        if (SelectedTarget is null)
-        {
-            return;
-        }
-
-        Targets.Remove(SelectedTarget);
-        SelectedTarget = Targets.FirstOrDefault();
-        ClearTargetsCommand.RaiseCanExecuteChanged();
-    }
-
-    private void ClearTargets()
-    {
-        Targets.Clear();
-        SelectedTarget = null;
-        CacheWarningText = "";
-        ClearTargetsCommand.RaiseCanExecuteChanged();
-    }
-
     private async Task StartScanAsync()
     {
-        if (Targets.Count == 0 && SelectedDrive is not null)
+        if (SelectedDrive is null)
         {
-            AddSelectedDrive();
-        }
-
-        if (Targets.Count == 0)
-        {
-            StatusSummary = "Добавьте хотя бы один диск или папку";
+            StatusSummary = "Выберите диск для анализа";
             return;
         }
 
@@ -506,32 +412,20 @@ public sealed class MainViewModel : ViewModelBase
             AnalyzeSizeOnDisk = AnalyzeSizeOnDisk,
             ExcludedPaths = _excludedPaths.ToList()
         };
+        var targetPath = SelectedDrive.RootPath;
 
         try
         {
-            foreach (var target in Targets.ToList())
-            {
-                if (_scanCancellation.Token.IsCancellationRequested)
-                {
-                    break;
-                }
+            var root = CreatePlaceholderRoot(targetPath);
+            Roots.Add(root);
+            SelectedNode = root;
+            StatusSummary = $"Анализ: {targetPath}";
 
-                var root = CreatePlaceholderRoot(target.Path);
-                Roots.Add(root);
-                SelectedNode ??= root;
-                StatusSummary = $"Анализ: {target.Path}";
-
-                var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
-                var result = await _scanner.ScanAsync(target.Path, options, progress, _scanCancellation.Token);
-                ApplyRootResult(root, result);
-                ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
-                RebuildSearchResults();
-
-                if (_scanCancellation.Token.IsCancellationRequested)
-                {
-                    break;
-                }
-            }
+            var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
+            var result = await _scanner.ScanAsync(targetPath, options, progress, _scanCancellation.Token);
+            ApplyRootResult(root, result);
+            ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
+            RebuildSearchResults();
 
             StatusSummary = _scanCancellation.Token.IsCancellationRequested
                 ? "Анализ отменен"
@@ -750,7 +644,7 @@ public sealed class MainViewModel : ViewModelBase
     {
         _cache.Clear();
         CacheWarningText = "";
-        StatusSummary = "Кеш анализа очищен";
+        StatusSummary = "Кэш анализа очищен";
     }
 
     private static void ExecuteNodeAction(object? parameter, Action<ScanNode> action)
@@ -904,7 +798,7 @@ public sealed class MainViewModel : ViewModelBase
             Name = Path.GetPathRoot(path) == path ? path : Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             Kind = Directory.Exists(path) ? FileSystemItemKind.Folder : FileSystemItemKind.File,
             Risk = RiskLevel.Safe,
-            StatusText = "В очереди"
+            StatusText = "Подготовка"
         };
 
         root.IsExpanded = true;
@@ -925,9 +819,9 @@ public sealed class MainViewModel : ViewModelBase
         var result = System.Windows.MessageBox.Show(
             "Полный анализ системных каталогов может занять больше времени и показать файлы, которые не рекомендуется удалять вручную.",
             "Полный анализ",
-            System.Windows.MessageBoxButton.OKCancel,
-            System.Windows.MessageBoxImage.Warning);
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
 
-        return result == System.Windows.MessageBoxResult.OK;
+        return result == MessageBoxResult.OK;
     }
 }

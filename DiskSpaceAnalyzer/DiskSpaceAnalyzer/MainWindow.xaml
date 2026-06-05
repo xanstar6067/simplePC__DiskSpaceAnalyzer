@@ -1,4 +1,4 @@
-<Window x:Class="DiskSpaceAnalyzer.MainWindow"
+﻿<Window x:Class="DiskSpaceAnalyzer.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -187,38 +187,17 @@
 
         <Border Style="{StaticResource Panel}" Padding="14">
             <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Grid Grid.Column="0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" MinWidth="320" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <ComboBox Grid.Column="0"
-                              ItemsSource="{Binding AvailableDrives}"
-                              SelectedItem="{Binding SelectedDrive}"
-                              DisplayMemberPath="DisplayName" />
-                    <Button Content="Добавить диск"
-                            Margin="8,0,0,0"
-                            Grid.Column="1"
-                            MinWidth="112"
-                            Command="{Binding AddDriveCommand}" />
-                    <Button Content="Добавить папку"
-                            Margin="8,0,0,0"
-                            Grid.Column="2"
-                            MinWidth="112"
-                            Command="{Binding AddFolderCommand}" />
-                </Grid>
+                <ComboBox Grid.Column="0"
+                          MinWidth="320"
+                          ItemsSource="{Binding AvailableDrives}"
+                          SelectedItem="{Binding SelectedDrive}"
+                          DisplayMemberPath="DisplayName" />
 
                 <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right" Margin="18,0,0,0">
                     <CheckBox Content="Сканировать системные каталоги полностью"
@@ -227,10 +206,10 @@
                     <CheckBox Content="Анализировать реальный размер на диске"
                               Margin="0,6,0,0"
                               IsChecked="{Binding AnalyzeSizeOnDisk}" />
-                    <CheckBox Content="Игнорировать кеш при сканировании"
+                    <CheckBox Content="Игнорировать кэш при сканировании"
                               Margin="0,6,0,0"
                               IsChecked="{Binding IgnoreCache}" />
-                    <Button Content="Очистить кеш"
+                    <Button Content="Очистить кэш"
                             MinWidth="126"
                             Command="{Binding ClearCacheCommand}" />
                 </StackPanel>
@@ -247,29 +226,6 @@
                             Height="44"
                             Command="{Binding CancelScanCommand}" />
                 </StackPanel>
-
-                <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <ListBox Grid.Column="0"
-                             ItemsSource="{Binding Targets}"
-                             SelectedItem="{Binding SelectedTarget}"
-                             DisplayMemberPath="DisplayName"
-                             Height="72"
-                             BorderBrush="#D7DDE5" />
-                    <StackPanel Grid.Column="1" Orientation="Vertical" Margin="10,0,0,0">
-                        <Button Content="Убрать"
-                                MinWidth="96"
-                                Command="{Binding RemoveTargetCommand}" />
-                        <Button Content="Очистить"
-                                MinWidth="96"
-                                Margin="0,8,0,0"
-                                Command="{Binding ClearTargetsCommand}" />
-                    </StackPanel>
-                </Grid>
             </Grid>
         </Border>
 
@@ -478,3 +434,4 @@
         </Grid>
     </Grid>
 </Window>
+
