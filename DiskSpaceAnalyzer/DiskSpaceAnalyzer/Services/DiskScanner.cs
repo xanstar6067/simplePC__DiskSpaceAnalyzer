@@ -182,10 +182,10 @@ public sealed class DiskScanner
         }
         catch (UnauthorizedAccessException)
         {
-            cacheWriter?.WriteDirectory(node);
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
             node.StatusText = "Нет доступа";
+            cacheWriter?.WriteDirectory(node);
             return node;
         }
         catch (IOException ex)
@@ -230,8 +230,8 @@ public sealed class DiskScanner
         {
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
-            cacheWriter?.WriteDirectory(node);
             node.StatusText = "Нет доступа";
+            cacheWriter?.WriteDirectory(node);
             return node;
         }
         catch (IOException ex)
@@ -246,11 +246,8 @@ public sealed class DiskScanner
         node.SortChildrenBySize();
         if (!cancellationToken.IsCancellationRequested)
         {
-            cacheWriter?.WriteDirectory(node);
-        }
-        if (!cancellationToken.IsCancellationRequested)
-        {
             node.StatusText = "Готово";
+            cacheWriter?.WriteDirectory(node);
         }
 
         return node;

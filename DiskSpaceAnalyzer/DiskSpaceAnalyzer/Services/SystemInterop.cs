@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using DiskSpaceAnalyzer.Models;
@@ -126,6 +127,19 @@ public static class SystemInterop
         return false;
     }
 
+    public static void TrimWorkingSet()
+    {
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            EmptyWorkingSet(process.Handle);
+        }
+        catch
+        {
+            // Working-set trimming is an optional optimization.
+        }
+    }
+
     private static bool TryGetStorageBusType(SafeFileHandle handle, out int busType)
     {
         busType = 0;
@@ -212,6 +226,10 @@ public static class SystemInterop
         int nOutBufferSize,
         out int lpBytesReturned,
         IntPtr lpOverlapped);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

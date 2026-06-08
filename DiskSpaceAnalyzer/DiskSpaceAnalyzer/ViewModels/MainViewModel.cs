@@ -371,7 +371,7 @@ public sealed class MainViewModel : ViewModelBase
         SelectedDrive = selectFirst ? AvailableDrives.FirstOrDefault() : null;
     }
 
-    private bool TryShowCachedScan(string path)
+    private bool TryShowCachedScan(string path, bool showStaleWarning = true)
     {
         if (!_cache.TryRestoreSnapshot(path, AnalyzeSizeOnDisk, out var cached) || cached is null)
         {
@@ -391,7 +391,14 @@ public sealed class MainViewModel : ViewModelBase
         SizeOnDiskBytes = cached.SizeOnDisk;
         CurrentPath = cached.FullPath;
 
-        ApplyCacheWarning(cached.FullPath);
+        if (showStaleWarning)
+        {
+            ApplyCacheWarning(cached.FullPath);
+        }
+        else
+        {
+            CacheWarningText = "";
+        }
         RebuildSearchResults();
         QueueChartRefresh();
         return true;
@@ -434,18 +441,13 @@ public sealed class MainViewModel : ViewModelBase
         };
         var targetPath = SelectedDrive.RootPath;
 
+        var shouldReleaseMemory = false;
         try
         {
-            var root = CreatePlaceholderRoot(targetPath);
-            Roots.Add(root);
-            SelectedNode = root;
-            StatusSummary = $"Анализ: {targetPath}";
-
-            var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
-            var result = await _scanner.ScanAsync(targetPath, options, progress, _scanCancellation.Token);
-            ApplyRootResult(root, result);
-            ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
-            RebuildSearchResults();
+            shouldReleaseMemory = await RunScanAndDisplayAsync(
+                targetPath,
+                options,
+                _scanCancellation.Token);
 
             StatusSummary = _scanCancellation.Token.IsCancellationRequested
                 ? "Анализ отменен"
@@ -462,6 +464,36 @@ public sealed class MainViewModel : ViewModelBase
             _scanCancellation?.Dispose();
             _scanCancellation = null;
         }
+
+        if (shouldReleaseMemory)
+        {
+            await ReleaseUnusedMemoryAsync();
+        }
+    }
+
+    private async Task<bool> RunScanAndDisplayAsync(
+        string targetPath,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        var root = CreatePlaceholderRoot(targetPath);
+        Roots.Add(root);
+        SelectedNode = root;
+        StatusSummary = $"Анализ: {targetPath}";
+
+        var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
+        var result = await _scanner.ScanAsync(targetPath, options, progress, cancellationToken);
+
+        if (!cancellationToken.IsCancellationRequested &&
+            TryShowCachedScan(targetPath, showStaleWarning: false))
+        {
+            return true;
+        }
+
+        ApplyRootResult(root, result);
+        ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
+        RebuildSearchResults();
+        return false;
     }
 
     private async Task RefreshNodeAsync(ScanNode? node)
@@ -484,14 +516,17 @@ public sealed class MainViewModel : ViewModelBase
         CacheWarningText = "";
         _scanCancellation = new CancellationTokenSource();
 
+        var shouldReleaseMemory = false;
         try
         {
-            var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, node));
-            var result = await _scanner.ScanAsync(node.FullPath, options, progress, _scanCancellation.Token);
-            ReplaceNode(node, result);
+            shouldReleaseMemory = await RunRefreshAndDisplayAsync(
+                node,
+                options,
+                _scanCancellation.Token);
+
             StatusSummary = _scanCancellation.Token.IsCancellationRequested
                 ? "Обновление отменено"
-                : $"Обновлено: {result.FullPath}";
+                : $"Обновлено: {node.FullPath}";
         }
         catch (OperationCanceledException)
         {
@@ -504,6 +539,31 @@ public sealed class MainViewModel : ViewModelBase
             _scanCancellation?.Dispose();
             _scanCancellation = null;
         }
+
+        if (shouldReleaseMemory)
+        {
+            await ReleaseUnusedMemoryAsync();
+        }
+    }
+
+    private async Task<bool> RunRefreshAndDisplayAsync(
+        ScanNode node,
+        ScanOptions options,
+        CancellationToken cancellationToken)
+    {
+        var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, node));
+        var result = await _scanner.ScanAsync(node.FullPath, options, progress, cancellationToken);
+
+        if (!cancellationToken.IsCancellationRequested &&
+            _cache.TryRestoreSnapshot(node.FullPath, AnalyzeSizeOnDisk, out var cached) &&
+            cached is not null)
+        {
+            ReplaceNode(node, cached);
+            return true;
+        }
+
+        ReplaceNode(node, result);
+        return false;
     }
 
     private void CancelScan()
@@ -1079,6 +1139,17 @@ public sealed class MainViewModel : ViewModelBase
         }
 
         return false;
+    }
+
+    private static async Task ReleaseUnusedMemoryAsync()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null)
+        {
+            await dispatcher.InvokeAsync(static () => { }, DispatcherPriority.ApplicationIdle);
+        }
+
+        await Task.Run(MemoryReleaseService.ReleaseUnusedMemory);
     }
 
     private static bool ConfirmFullSystemScan()
