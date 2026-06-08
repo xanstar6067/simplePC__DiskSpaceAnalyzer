@@ -24,7 +24,7 @@ public sealed class DiskScanner
         return Task.Run(() =>
         {
             var normalized = PathRiskClassifier.Normalize(path);
-            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, options.AnalyzeSizeOnDisk, out var cached) && cached is not null)
+            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, options.SizeCalculationMode, out var cached) && cached is not null)
             {
                 AddCachedCounters(cached, out var files, out var directories, out var logical, out var onDisk);
                 progress?.Report(new ScanProgressInfo
@@ -39,7 +39,7 @@ public sealed class DiskScanner
                 return cached;
             }
 
-            using var cacheWriter = _cache.BeginSnapshot(normalized, options.AnalyzeSizeOnDisk);
+            using var cacheWriter = _cache.BeginSnapshot(normalized, options.SizeCalculationMode);
             var counters = new ScanCounters();
             var activeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var root = ScanEntry(
@@ -133,9 +133,9 @@ public sealed class DiskScanner
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
         var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
         FillMetadata(node, fileSystemInfo);
-        if (options.AnalyzeSizeOnDisk)
+        if (options.SizeCalculationMode == SizeCalculationMode.Exact)
         {
-            node.SizeOnDisk = SystemInterop.GetSizeOnDisk(path, 0, isDirectory: true);
+            node.SizeOnDisk = SystemInterop.GetExactSizeOnDisk(path, 0, isDirectory: true);
         }
 
         if (decision.ShouldSkip)
@@ -299,9 +299,12 @@ public sealed class DiskScanner
         {
             var info = fileSystemInfo as FileInfo ?? new FileInfo(path);
             node.LogicalSize = info.Length;
-            node.SizeOnDisk = options.AnalyzeSizeOnDisk
-                ? SystemInterop.GetSizeOnDisk(path, node.LogicalSize)
-                : node.LogicalSize;
+            node.SizeOnDisk = options.SizeCalculationMode switch
+            {
+                SizeCalculationMode.Exact => SystemInterop.GetExactSizeOnDisk(path, node.LogicalSize),
+                SizeCalculationMode.Approximate => SystemInterop.GetApproximateSizeOnDisk(path, node.LogicalSize),
+                _ => node.LogicalSize
+            };
             node.ModifiedAt = info.LastWriteTime;
         }
         catch

@@ -184,25 +184,31 @@
                     <CheckBox Content="Анализировать реальный размер на диске"
                               Margin="0,6,0,0"
                               IsChecked="{Binding AnalyzeSizeOnDisk}" />
+                    <CheckBox Content="Примерный размер быстро"
+                              Margin="0,6,0,0"
+                              IsChecked="{Binding ApproximateSizeOnDisk}" />
                     <CheckBox Content="Игнорировать кэш при сканировании"
                               Margin="0,6,0,0"
                               IsChecked="{Binding IgnoreCache}" />
-                    <Button Content="Очистить кэш"
-                            MinWidth="126"
-                            Command="{Binding ClearCacheCommand}" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,0,0,0">
-                    <Button Content="Старт"
-                            Style="{StaticResource PrimaryButton}"
-                            MinWidth="92"
-                            Height="44"
-                            Command="{Binding StartScanCommand}" />
-                    <Button Content="Отмена"
-                            MinWidth="92"
-                            Margin="8,0,0,0"
-                            Height="44"
-                            Command="{Binding CancelScanCommand}" />
+                <StackPanel Grid.Column="2" Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="Старт"
+                                Style="{StaticResource PrimaryButton}"
+                                MinWidth="92"
+                                Height="44"
+                                Command="{Binding StartScanCommand}" />
+                        <Button Content="Отмена"
+                                MinWidth="92"
+                                Margin="8,0,0,0"
+                                Height="44"
+                                Command="{Binding CancelScanCommand}" />
+                    </StackPanel>
+                    <Button Content="Очистить кэш"
+                            Margin="0,6,0,0"
+                            HorizontalAlignment="Stretch"
+                            Command="{Binding ClearCacheCommand}" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -364,7 +370,7 @@
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="Text" Value="{Binding SizeOnDiskText}" />
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding DataContext.AnalyzeSizeOnDisk, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        <DataTrigger Binding="{Binding DataContext.DisplayUsesSizeOnDisk, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                      Value="False">
                                                             <Setter Property="Text" Value="Н/Д" />
                                                         </DataTrigger>
@@ -382,7 +388,7 @@
                                             <TextBlock.Text>
                                                 <MultiBinding Converter="{StaticResource ScanNodePercent}">
                                                     <Binding />
-                                                    <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                    <Binding Path="DataContext.DisplayUsesSizeOnDisk"
                                                              RelativeSource="{RelativeSource AncestorType=Window}" />
                                                 </MultiBinding>
                                             </TextBlock.Text>
@@ -433,7 +439,7 @@
 
                     <controls:DonutChart Grid.Row="1"
                                          ItemsSource="{Binding ChartChildren}"
-                                         UseSizeOnDisk="{Binding AnalyzeSizeOnDisk}"
+                                         UseSizeOnDisk="{Binding DisplayUsesSizeOnDisk}"
                                          SliceCommand="{Binding SelectNodeCommand}"
                                          Margin="0,8" />
 
@@ -492,7 +498,7 @@
                                                 <TextBlock.Text>
                                                     <MultiBinding Converter="{StaticResource ScanNodeSize}">
                                                         <Binding />
-                                                        <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                        <Binding Path="DataContext.DisplayUsesSizeOnDisk"
                                                                  RelativeSource="{RelativeSource AncestorType=Window}" />
                                                     </MultiBinding>
                                                 </TextBlock.Text>
@@ -507,7 +513,7 @@
                                                 <TextBlock.Text>
                                                     <MultiBinding Converter="{StaticResource ScanNodePercent}">
                                                         <Binding />
-                                                        <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                        <Binding Path="DataContext.DisplayUsesSizeOnDisk"
                                                                  RelativeSource="{RelativeSource AncestorType=Window}" />
                                                     </MultiBinding>
                                                 </TextBlock.Text>

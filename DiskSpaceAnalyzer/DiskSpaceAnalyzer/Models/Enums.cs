@@ -25,3 +25,10 @@ public enum StorageKind
     NvmeSsd,
     Unknown
 }
+
+public enum SizeCalculationMode
+{
+    Logical,
+    Exact,
+    Approximate
+}

@@ -35,7 +35,9 @@ public sealed class MainViewModel : ViewModelBase
     private string _searchQuery = "";
     private bool _includeSystemDirectories;
     private bool _ignoreCache;
-    private bool _analyzeSizeOnDisk = true;
+    private bool _analyzeSizeOnDisk;
+    private bool _approximateSizeOnDisk = true;
+    private SizeCalculationMode _displayedSizeCalculationMode = SizeCalculationMode.Approximate;
     private bool _isScanning;
     private bool _chartRefreshQueued;
     private bool _isRefreshingChartChildren;
@@ -251,11 +253,36 @@ public sealed class MainViewModel : ViewModelBase
         {
             if (SetProperty(ref _analyzeSizeOnDisk, value))
             {
-                OnPropertyChanged(nameof(SizeOnDiskBytesText));
-                QueueChartRefresh();
+                if (value && _approximateSizeOnDisk)
+                {
+                    _approximateSizeOnDisk = false;
+                    OnPropertyChanged(nameof(ApproximateSizeOnDisk));
+                }
+
+                ApplySelectedSizeModeWhenIdle();
             }
         }
     }
+
+    public bool ApproximateSizeOnDisk
+    {
+        get => _approximateSizeOnDisk;
+        set
+        {
+            if (SetProperty(ref _approximateSizeOnDisk, value))
+            {
+                if (value && _analyzeSizeOnDisk)
+                {
+                    _analyzeSizeOnDisk = false;
+                    OnPropertyChanged(nameof(AnalyzeSizeOnDisk));
+                }
+
+                ApplySelectedSizeModeWhenIdle();
+            }
+        }
+    }
+
+    public bool DisplayUsesSizeOnDisk => _displayedSizeCalculationMode != SizeCalculationMode.Logical;
 
     public bool IsScanning
     {
@@ -331,9 +358,57 @@ public sealed class MainViewModel : ViewModelBase
 
     public string LogicalBytesText => FileSizeFormatter.Format(LogicalBytes);
 
-    public string SizeOnDiskBytesText => AnalyzeSizeOnDisk
+    public string SizeOnDiskBytesText => DisplayUsesSizeOnDisk
         ? FileSizeFormatter.Format(SizeOnDiskBytes)
         : "Н/Д";
+
+    private SizeCalculationMode SelectedSizeCalculationMode => AnalyzeSizeOnDisk
+        ? SizeCalculationMode.Exact
+        : ApproximateSizeOnDisk
+            ? SizeCalculationMode.Approximate
+            : SizeCalculationMode.Logical;
+
+    private void ApplySelectedSizeModeWhenIdle()
+    {
+        if (IsScanning)
+        {
+            return;
+        }
+
+        var selectedMode = SelectedSizeCalculationMode;
+        if (selectedMode == SizeCalculationMode.Logical || Roots.Count == 0)
+        {
+            SetDisplayedSizeCalculationMode(selectedMode);
+            return;
+        }
+
+        if (_displayedSizeCalculationMode == selectedMode)
+        {
+            return;
+        }
+
+        if (SelectedDrive is not null &&
+            TryShowCachedScan(SelectedDrive.RootPath, sizeCalculationMode: selectedMode))
+        {
+            return;
+        }
+
+        SetDisplayedSizeCalculationMode(selectedMode);
+        ClearAnalysisView("Для выбранного режима нет кэша. Запустите анализ.");
+    }
+
+    private void SetDisplayedSizeCalculationMode(SizeCalculationMode mode)
+    {
+        if (_displayedSizeCalculationMode == mode)
+        {
+            return;
+        }
+
+        _displayedSizeCalculationMode = mode;
+        OnPropertyChanged(nameof(DisplayUsesSizeOnDisk));
+        OnPropertyChanged(nameof(SizeOnDiskBytesText));
+        QueueChartRefresh();
+    }
 
     public string SelectedNodeSafetyText => SelectedNode?.Risk switch
     {
@@ -380,13 +455,18 @@ public sealed class MainViewModel : ViewModelBase
         SelectedDrive = selectFirst ? AvailableDrives.FirstOrDefault() : null;
     }
 
-    private bool TryShowCachedScan(string path, bool showStaleWarning = true)
+    private bool TryShowCachedScan(
+        string path,
+        bool showStaleWarning = true,
+        SizeCalculationMode? sizeCalculationMode = null)
     {
-        if (!_cache.TryRestoreSnapshot(path, AnalyzeSizeOnDisk, out var cached) || cached is null)
+        var mode = sizeCalculationMode ?? SelectedSizeCalculationMode;
+        if (!_cache.TryRestoreSnapshot(path, mode, out var cached) || cached is null)
         {
             return false;
         }
 
+        SetDisplayedSizeCalculationMode(mode);
         ClearAnalysisNodes();
 
         cached.IsExpanded = true;
@@ -445,9 +525,10 @@ public sealed class MainViewModel : ViewModelBase
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
             IgnoreCache = IgnoreCache,
-            AnalyzeSizeOnDisk = AnalyzeSizeOnDisk,
+            SizeCalculationMode = SelectedSizeCalculationMode,
             ExcludedPaths = _excludedPaths.ToList()
         };
+        SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
         var targetPath = SelectedDrive.RootPath;
 
         var shouldReleaseMemory = false;
@@ -494,7 +575,7 @@ public sealed class MainViewModel : ViewModelBase
         var result = await _scanner.ScanAsync(targetPath, options, progress, cancellationToken);
 
         if (!cancellationToken.IsCancellationRequested &&
-            TryShowCachedScan(targetPath, showStaleWarning: false))
+            TryShowCachedScan(targetPath, showStaleWarning: false, options.SizeCalculationMode))
         {
             return true;
         }
@@ -516,9 +597,10 @@ public sealed class MainViewModel : ViewModelBase
         {
             IncludeSystemDirectories = IncludeSystemDirectories,
             IgnoreCache = true,
-            AnalyzeSizeOnDisk = AnalyzeSizeOnDisk,
+            SizeCalculationMode = SelectedSizeCalculationMode,
             ExcludedPaths = _excludedPaths.ToList()
         };
+        SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
 
         IsScanning = true;
         ResetProgress();
@@ -564,7 +646,7 @@ public sealed class MainViewModel : ViewModelBase
         var result = await _scanner.ScanAsync(node.FullPath, options, progress, cancellationToken);
 
         if (!cancellationToken.IsCancellationRequested &&
-            _cache.TryRestoreSnapshot(node.FullPath, AnalyzeSizeOnDisk, out var cached) &&
+            _cache.TryRestoreSnapshot(node.FullPath, options.SizeCalculationMode, out var cached) &&
             cached is not null)
         {
             ReplaceNode(node, cached);
@@ -968,7 +1050,7 @@ public sealed class MainViewModel : ViewModelBase
         List<ScanNode> children = SelectedNode is null
             ? []
             : SelectedNode.ExistingChildren
-                .OrderByDescending(node => AnalyzeSizeOnDisk ? node.SizeOnDisk : node.LogicalSize)
+                .OrderByDescending(node => DisplayUsesSizeOnDisk ? node.SizeOnDisk : node.LogicalSize)
                 .Take(20)
                 .ToList();
 

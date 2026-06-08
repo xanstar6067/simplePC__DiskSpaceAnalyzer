@@ -1,3 +1,5 @@
+using DiskSpaceAnalyzer.Models;
+
 namespace DiskSpaceAnalyzer.Services;
 
 public sealed class ScanOptions
@@ -6,7 +8,7 @@ public sealed class ScanOptions
 
     public bool IgnoreCache { get; init; }
 
-    public bool AnalyzeSizeOnDisk { get; init; } = true;
+    public SizeCalculationMode SizeCalculationMode { get; init; } = SizeCalculationMode.Approximate;
 
     public IReadOnlyCollection<string> ExcludedPaths { get; init; } = [];
 }

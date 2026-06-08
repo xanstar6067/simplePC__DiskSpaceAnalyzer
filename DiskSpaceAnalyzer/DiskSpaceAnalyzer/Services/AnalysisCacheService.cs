@@ -11,7 +11,7 @@ namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
-    private const int CurrentFormatVersion = 4;
+    private const int CurrentFormatVersion = 5;
     private const int StreamBufferSize = 64 * 1024;
     private const int HashLength = 32;
     private const int IndexHeaderSize = 16;
@@ -40,7 +40,7 @@ public sealed class AnalysisCacheService
         Directory.CreateDirectory(_cacheDirectory);
     }
 
-    public bool TryRestoreSnapshot(string path, bool analyzeSizeOnDisk, out ScanNode? node)
+    public bool TryRestoreSnapshot(string path, SizeCalculationMode sizeCalculationMode, out ScanNode? node)
     {
         node = null;
 
@@ -50,7 +50,7 @@ public sealed class AnalysisCacheService
         if (manifest is null ||
             manifest.FormatVersion != CurrentFormatVersion ||
             !string.Equals(manifest.Path, normalized, StringComparison.OrdinalIgnoreCase) ||
-            manifest.AnalyzeSizeOnDisk.GetValueOrDefault(true) != analyzeSizeOnDisk ||
+            manifest.SizeCalculationMode != sizeCalculationMode ||
             !MatchesCurrentMetadata(manifest.Path, manifest.Metadata))
         {
             return false;
@@ -208,7 +208,7 @@ public sealed class AnalysisCacheService
         return results;
     }
 
-    internal SnapshotWriter? BeginSnapshot(string path, bool analyzeSizeOnDisk)
+    internal SnapshotWriter? BeginSnapshot(string path, SizeCalculationMode sizeCalculationMode)
     {
         var normalized = PathRiskClassifier.Normalize(path);
         var cacheHash = GetCacheHash(normalized);
@@ -228,7 +228,7 @@ public sealed class AnalysisCacheService
             return new SnapshotWriter(
                 this,
                 normalized,
-                analyzeSizeOnDisk,
+                sizeCalculationMode,
                 dataFileName,
                 indexFileName,
                 dataPath,
@@ -568,7 +568,7 @@ public sealed class AnalysisCacheService
     {
         private readonly AnalysisCacheService _owner;
         private readonly string _normalizedPath;
-        private readonly bool _analyzeSizeOnDisk;
+        private readonly SizeCalculationMode _sizeCalculationMode;
         private readonly string _dataFileName;
         private readonly string _indexFileName;
         private readonly string _dataPath;
@@ -588,7 +588,7 @@ public sealed class AnalysisCacheService
         internal SnapshotWriter(
             AnalysisCacheService owner,
             string normalizedPath,
-            bool analyzeSizeOnDisk,
+            SizeCalculationMode sizeCalculationMode,
             string dataFileName,
             string indexFileName,
             string dataPath,
@@ -601,7 +601,7 @@ public sealed class AnalysisCacheService
         {
             _owner = owner;
             _normalizedPath = normalizedPath;
-            _analyzeSizeOnDisk = analyzeSizeOnDisk;
+            _sizeCalculationMode = sizeCalculationMode;
             _dataFileName = dataFileName;
             _indexFileName = indexFileName;
             _dataPath = dataPath;
@@ -678,7 +678,7 @@ public sealed class AnalysisCacheService
                     FormatVersion = CurrentFormatVersion,
                     Path = _normalizedPath,
                     CachedAt = DateTimeOffset.UtcNow,
-                    AnalyzeSizeOnDisk = _analyzeSizeOnDisk,
+                    SizeCalculationMode = _sizeCalculationMode,
                     Metadata = ReadMetadata(root.FullPath),
                     DataFileName = _dataFileName,
                     IndexFileName = _indexFileName,
@@ -753,7 +753,7 @@ public sealed class AnalysisCacheService
 
         public DateTimeOffset CachedAt { get; set; }
 
-        public bool? AnalyzeSizeOnDisk { get; set; }
+        public SizeCalculationMode SizeCalculationMode { get; set; }
 
         public CachedMetadata Metadata { get; set; } = new();
 

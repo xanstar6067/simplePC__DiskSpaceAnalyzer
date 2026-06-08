@@ -15,14 +15,14 @@ public static class SystemInterop
     private const uint FileShareDelete = 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
-    private const uint InvalidFileSize = 0xFFFFFFFF;
+    private const uint InvalidFileSize = uint.MaxValue;
     private const uint IoctlStorageQueryProperty = 0x002D1400;
     private const int StorageDeviceProperty = 0;
     private const int StorageDeviceSeekPenaltyProperty = 7;
     private const int StandardQuery = 0;
     private const int BusTypeNvme = 17;
 
-    public static long GetSizeOnDisk(string path, long logicalSize, bool isDirectory = false)
+    public static long GetExactSizeOnDisk(string path, long logicalSize, bool isDirectory = false)
     {
         try
         {
@@ -37,11 +37,27 @@ public static class SystemInterop
                 IntPtr.Zero);
 
             if (!handle.IsInvalid &&
-                GetFileInformationByHandleEx(handle, FileInfoByHandleClass.FileStandardInfo, out FileStandardInfo standardInfo, Marshal.SizeOf<FileStandardInfo>()))
+                GetFileInformationByHandleEx(
+                    handle,
+                    FileInfoByHandleClass.FileStandardInfo,
+                    out FileStandardInfo standardInfo,
+                    Marshal.SizeOf<FileStandardInfo>()))
             {
                 return standardInfo.AllocationSize;
             }
+        }
+        catch
+        {
+            // Continue with the faster API when allocation metadata is unavailable.
+        }
 
+        return GetApproximateSizeOnDisk(path, logicalSize);
+    }
+
+    public static long GetApproximateSizeOnDisk(string path, long logicalSize)
+    {
+        try
+        {
             var low = GetCompressedFileSizeW(path, out var high);
             if (low == InvalidFileSize)
             {
@@ -52,7 +68,7 @@ public static class SystemInterop
                 }
             }
 
-            return ((long)high << 32) + low;
+            return ((long)high << 32) | low;
         }
         catch
         {
