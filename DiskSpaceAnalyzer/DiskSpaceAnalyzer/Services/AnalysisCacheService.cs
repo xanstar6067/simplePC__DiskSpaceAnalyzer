@@ -221,6 +221,7 @@ public sealed class AnalysisCacheService
         var temporaryDataPath = $"{dataPath}.writing";
         var temporaryIndexPath = $"{indexPath}.writing";
         var temporaryManifestPath = $"{manifestPath}.{generation}.writing";
+        var backupManifestPath = $"{manifestPath}.{generation}.backup";
         var previousManifest = TryReadManifest(manifestPath);
 
         try
@@ -237,6 +238,7 @@ public sealed class AnalysisCacheService
                 temporaryDataPath,
                 temporaryIndexPath,
                 temporaryManifestPath,
+                backupManifestPath,
                 previousManifest);
         }
         catch
@@ -244,6 +246,7 @@ public sealed class AnalysisCacheService
             TryDelete(temporaryDataPath);
             TryDelete(temporaryIndexPath);
             TryDelete(temporaryManifestPath);
+            TryDelete(backupManifestPath);
             TryDelete(dataPath);
             TryDelete(indexPath);
             return null;
@@ -577,6 +580,7 @@ public sealed class AnalysisCacheService
         private readonly string _temporaryDataPath;
         private readonly string _temporaryIndexPath;
         private readonly string _temporaryManifestPath;
+        private readonly string _backupManifestPath;
         private readonly CachedSnapshotManifest? _previousManifest;
         private readonly List<DirectoryIndexEntry> _indexEntries = [];
         private FileStream? _dataStream;
@@ -584,6 +588,7 @@ public sealed class AnalysisCacheService
         private long _lastFlushTimestamp = Stopwatch.GetTimestamp();
         private bool _failed;
         private bool _completed;
+        private bool _manifestPublished;
 
         internal SnapshotWriter(
             AnalysisCacheService owner,
@@ -597,6 +602,7 @@ public sealed class AnalysisCacheService
             string temporaryDataPath,
             string temporaryIndexPath,
             string temporaryManifestPath,
+            string backupManifestPath,
             CachedSnapshotManifest? previousManifest)
         {
             _owner = owner;
@@ -610,6 +616,7 @@ public sealed class AnalysisCacheService
             _temporaryDataPath = temporaryDataPath;
             _temporaryIndexPath = temporaryIndexPath;
             _temporaryManifestPath = temporaryManifestPath;
+            _backupManifestPath = backupManifestPath;
             _previousManifest = previousManifest;
             _dataStream = new FileStream(
                 temporaryDataPath,
@@ -697,9 +704,16 @@ public sealed class AnalysisCacheService
                     stream.Flush(flushToDisk: true);
                 }
 
+                if (File.Exists(_manifestPath))
+                {
+                    File.Copy(_manifestPath, _backupManifestPath);
+                }
+
                 File.Move(_temporaryManifestPath, _manifestPath, overwrite: true);
+                _manifestPublished = true;
                 _completed = true;
                 _owner.DeleteManifestFiles(_previousManifest, _dataFileName, _indexFileName);
+                TryDelete(_backupManifestPath);
                 return true;
             }
             catch
@@ -735,11 +749,37 @@ public sealed class AnalysisCacheService
             }
 
             _dataStream = null;
+            RestorePreviousManifest();
             TryDelete(_temporaryDataPath);
             TryDelete(_temporaryIndexPath);
             TryDelete(_temporaryManifestPath);
+            TryDelete(_backupManifestPath);
             TryDelete(_dataPath);
             TryDelete(_indexPath);
+        }
+
+        private void RestorePreviousManifest()
+        {
+            if (!_manifestPublished)
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(_backupManifestPath))
+                {
+                    File.Move(_backupManifestPath, _manifestPath, overwrite: true);
+                }
+                else
+                {
+                    TryDelete(_manifestPath);
+                }
+            }
+            catch
+            {
+                // The old data files remain intact even if restoring the manifest fails.
+            }
         }
     }
 

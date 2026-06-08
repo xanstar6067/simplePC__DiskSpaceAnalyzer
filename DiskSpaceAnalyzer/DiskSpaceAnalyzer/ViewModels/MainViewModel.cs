@@ -370,31 +370,14 @@ public sealed class MainViewModel : ViewModelBase
 
     private void ApplySelectedSizeModeWhenIdle()
     {
-        if (IsScanning)
+        if (IsScanning || Roots.Count == 0)
         {
             return;
         }
 
-        var selectedMode = SelectedSizeCalculationMode;
-        if (selectedMode == SizeCalculationMode.Logical || Roots.Count == 0)
-        {
-            SetDisplayedSizeCalculationMode(selectedMode);
-            return;
-        }
-
-        if (_displayedSizeCalculationMode == selectedMode)
-        {
-            return;
-        }
-
-        if (SelectedDrive is not null &&
-            TryShowCachedScan(SelectedDrive.RootPath, sizeCalculationMode: selectedMode))
-        {
-            return;
-        }
-
-        SetDisplayedSizeCalculationMode(selectedMode);
-        ClearAnalysisView("Для выбранного режима нет кэша. Запустите анализ.");
+        StatusSummary = SelectedSizeCalculationMode == _displayedSizeCalculationMode
+            ? "Показан текущий результат анализа"
+            : "Режим изменен. Он будет применен при следующем запуске анализа.";
     }
 
     private void SetDisplayedSizeCalculationMode(SizeCalculationMode mode)
@@ -516,9 +499,7 @@ public sealed class MainViewModel : ViewModelBase
         }
 
         IsScanning = true;
-        ResetProgress();
         CacheWarningText = "";
-        ClearAnalysisNodes();
         _scanCancellation = new CancellationTokenSource();
 
         var options = new ScanOptions
@@ -528,8 +509,19 @@ public sealed class MainViewModel : ViewModelBase
             SizeCalculationMode = SelectedSizeCalculationMode,
             ExcludedPaths = _excludedPaths.ToList()
         };
-        SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
         var targetPath = SelectedDrive.RootPath;
+        var preserveCurrentView = Roots.Count > 0;
+        var previousFiles = ProcessedFiles;
+        var previousDirectories = ProcessedDirectories;
+        var previousLogicalBytes = LogicalBytes;
+        var previousSizeOnDiskBytes = SizeOnDiskBytes;
+
+        if (!preserveCurrentView)
+        {
+            ResetProgress();
+            ClearAnalysisNodes();
+            SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
+        }
 
         var shouldReleaseMemory = false;
         try
@@ -537,7 +529,8 @@ public sealed class MainViewModel : ViewModelBase
             shouldReleaseMemory = await RunScanAndDisplayAsync(
                 targetPath,
                 options,
-                _scanCancellation.Token);
+                _scanCancellation.Token,
+                preserveCurrentView);
 
             StatusSummary = _scanCancellation.Token.IsCancellationRequested
                 ? "Анализ отменен"
@@ -549,6 +542,14 @@ public sealed class MainViewModel : ViewModelBase
         }
         finally
         {
+            if (_scanCancellation.Token.IsCancellationRequested && preserveCurrentView)
+            {
+                ProcessedFiles = previousFiles;
+                ProcessedDirectories = previousDirectories;
+                LogicalBytes = previousLogicalBytes;
+                SizeOnDiskBytes = previousSizeOnDiskBytes;
+            }
+
             CurrentPath = "";
             IsScanning = false;
             _scanCancellation?.Dispose();
@@ -564,15 +565,25 @@ public sealed class MainViewModel : ViewModelBase
     private async Task<bool> RunScanAndDisplayAsync(
         string targetPath,
         ScanOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preserveCurrentView)
     {
         var root = CreatePlaceholderRoot(targetPath);
-        Roots.Add(root);
-        SelectedNode = root;
+        if (!preserveCurrentView)
+        {
+            Roots.Add(root);
+            SelectedNode = root;
+        }
+
         StatusSummary = $"Анализ: {targetPath}";
 
         var progress = new Progress<ScanProgressInfo>(info => ApplyProgress(info, root));
         var result = await _scanner.ScanAsync(targetPath, options, progress, cancellationToken);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
 
         if (!cancellationToken.IsCancellationRequested &&
             TryShowCachedScan(targetPath, showStaleWarning: false, options.SizeCalculationMode))
@@ -580,6 +591,14 @@ public sealed class MainViewModel : ViewModelBase
             return true;
         }
 
+        if (preserveCurrentView)
+        {
+            ClearAnalysisNodes();
+            Roots.Add(root);
+            SelectedNode = root;
+        }
+
+        SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
         ApplyRootResult(root, result);
         ApplyCacheWarningIfNeeded(result.FullPath, result.StatusText);
         RebuildSearchResults();
