@@ -247,7 +247,13 @@ public sealed class MainViewModel : ViewModelBase
     public bool AnalyzeSizeOnDisk
     {
         get => _analyzeSizeOnDisk;
-        set => SetProperty(ref _analyzeSizeOnDisk, value);
+        set
+        {
+            if (SetProperty(ref _analyzeSizeOnDisk, value))
+            {
+                OnPropertyChanged(nameof(SizeOnDiskBytesText));
+            }
+        }
     }
 
     public bool IsScanning
@@ -324,7 +330,9 @@ public sealed class MainViewModel : ViewModelBase
 
     public string LogicalBytesText => FileSizeFormatter.Format(LogicalBytes);
 
-    public string SizeOnDiskBytesText => FileSizeFormatter.Format(SizeOnDiskBytes);
+    public string SizeOnDiskBytesText => AnalyzeSizeOnDisk
+        ? FileSizeFormatter.Format(SizeOnDiskBytes)
+        : "Н/Д";
 
     public string SelectedNodeSafetyText => SelectedNode?.Risk switch
     {

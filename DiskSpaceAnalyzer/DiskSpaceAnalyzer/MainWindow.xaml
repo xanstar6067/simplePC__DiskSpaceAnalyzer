@@ -354,10 +354,25 @@
                                                 Width="100"
                                                 Binding="{Binding LogicalSizeText}"
                                                 ElementStyle="{StaticResource RightAlignCell}" />
-                            <DataGridTextColumn Header="На диске"
-                                                Width="100"
-                                                Binding="{Binding SizeOnDiskText}"
-                                                ElementStyle="{StaticResource RightAlignCell}" />
+                            <DataGridTemplateColumn Header="На диске" Width="100">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock HorizontalAlignment="Right">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="{Binding SizeOnDiskText}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding DataContext.AnalyzeSizeOnDisk, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                     Value="False">
+                                                            <Setter Property="Text" Value="Н/Д" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Доля"
                                                 Width="72"
                                                 Binding="{Binding PercentOfParentText}"
@@ -456,7 +471,8 @@
                             <GridView>
                                 <GridViewColumn Header="Крупные элементы" Width="190" DisplayMemberBinding="{Binding DisplayName}" />
                                 <GridViewColumn Header="Тип" Width="82" DisplayMemberBinding="{Binding KindText}" />
-                                <GridViewColumn Header="На диске" Width="94" DisplayMemberBinding="{Binding SizeOnDiskText}" />
+                                <GridViewColumn Header="Размер" Width="94" DisplayMemberBinding="{Binding LogicalSizeText}" />
+                                <GridViewColumn Header="Доля" Width="68" DisplayMemberBinding="{Binding PercentOfParentText}" />
                                 <GridViewColumn Header="Статус" Width="128" DisplayMemberBinding="{Binding RiskText}" />
                             </GridView>
                         </ListView.View>
