@@ -322,7 +322,7 @@
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="Имя" Width="*" MinWidth="160">
+                            <DataGridTemplateColumn Header="Имя" Width="SizeToCells" MinWidth="160">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <StackPanel Orientation="Horizontal"
@@ -344,7 +344,6 @@
                                                 </ToggleButton.Style>
                                             </ToggleButton>
                                             <TextBlock Text="{Binding DisplayName}"
-                                                       TextTrimming="CharacterEllipsis"
                                                        VerticalAlignment="Center"
                                                        Foreground="#17202A" />
                                         </StackPanel>
