@@ -252,6 +252,7 @@ public sealed class MainViewModel : ViewModelBase
             if (SetProperty(ref _analyzeSizeOnDisk, value))
             {
                 OnPropertyChanged(nameof(SizeOnDiskBytesText));
+                QueueChartRefresh();
             }
         }
     }
@@ -967,7 +968,7 @@ public sealed class MainViewModel : ViewModelBase
         List<ScanNode> children = SelectedNode is null
             ? []
             : SelectedNode.ExistingChildren
-                .OrderByDescending(node => node.SizeOnDisk)
+                .OrderByDescending(node => AnalyzeSizeOnDisk ? node.SizeOnDisk : node.LogicalSize)
                 .Take(20)
                 .ToList();
 

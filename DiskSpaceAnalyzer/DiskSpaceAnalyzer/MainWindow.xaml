@@ -19,6 +19,8 @@
         <converters:BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibility" />
         <converters:RiskWarningVisibilityConverter x:Key="RiskWarningVisibility" />
+        <converters:ScanNodeSizeConverter x:Key="ScanNodeSize" />
+        <converters:ScanNodePercentConverter x:Key="ScanNodePercent" />
 
         <SolidColorBrush x:Key="PanelBorderBrush" Color="#D7DDE5" />
         <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#FFFFFFFF" />
@@ -373,10 +375,21 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="Доля"
-                                                Width="72"
-                                                Binding="{Binding PercentOfParentText}"
-                                                ElementStyle="{StaticResource RightAlignCell}" />
+                            <DataGridTemplateColumn Header="Доля" Width="72">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock HorizontalAlignment="Right">
+                                            <TextBlock.Text>
+                                                <MultiBinding Converter="{StaticResource ScanNodePercent}">
+                                                    <Binding />
+                                                    <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                             RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                </MultiBinding>
+                                            </TextBlock.Text>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Статус"
                                                 Width="108"
                                                 Binding="{Binding RiskText}"
@@ -420,6 +433,7 @@
 
                     <controls:DonutChart Grid.Row="1"
                                          ItemsSource="{Binding ChartChildren}"
+                                         UseSizeOnDisk="{Binding AnalyzeSizeOnDisk}"
                                          SliceCommand="{Binding SelectNodeCommand}"
                                          Margin="0,8" />
 
@@ -471,8 +485,36 @@
                             <GridView>
                                 <GridViewColumn Header="Крупные элементы" Width="190" DisplayMemberBinding="{Binding DisplayName}" />
                                 <GridViewColumn Header="Тип" Width="82" DisplayMemberBinding="{Binding KindText}" />
-                                <GridViewColumn Header="Размер" Width="94" DisplayMemberBinding="{Binding LogicalSizeText}" />
-                                <GridViewColumn Header="Доля" Width="68" DisplayMemberBinding="{Binding PercentOfParentText}" />
+                                <GridViewColumn Header="Размер" Width="94">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock HorizontalAlignment="Right">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource ScanNodeSize}">
+                                                        <Binding />
+                                                        <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                                 RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="Доля" Width="68">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock HorizontalAlignment="Right">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource ScanNodePercent}">
+                                                        <Binding />
+                                                        <Binding Path="DataContext.AnalyzeSizeOnDisk"
+                                                                 RelativeSource="{RelativeSource AncestorType=Window}" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
                             </GridView>
                         </ListView.View>
                     </ListView>

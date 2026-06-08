@@ -31,6 +31,13 @@ public sealed class DonutChart : FrameworkElement
             typeof(DonutChart),
             new PropertyMetadata(null));
 
+    public static readonly DependencyProperty UseSizeOnDiskProperty =
+        DependencyProperty.Register(
+            nameof(UseSizeOnDisk),
+            typeof(bool),
+            typeof(DonutChart),
+            new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender, OnUseSizeOnDiskChanged));
+
     private static readonly WpfColor[] Palette =
     [
         WpfColor.FromRgb(45, 128, 116),
@@ -71,6 +78,12 @@ public sealed class DonutChart : FrameworkElement
         set => SetValue(SliceCommandProperty, value);
     }
 
+    public bool UseSizeOnDisk
+    {
+        get => (bool)GetValue(UseSizeOnDiskProperty);
+        set => SetValue(UseSizeOnDiskProperty, value);
+    }
+
     protected override WpfSize MeasureOverride(WpfSize availableSize)
     {
         var side = Math.Min(
@@ -89,7 +102,7 @@ public sealed class DonutChart : FrameworkElement
         var radius = Math.Max(20, Math.Min(RenderSize.Width, RenderSize.Height) / 2 - 10);
         var innerRadius = radius * 0.58;
         var nodes = GetNodes().ToList();
-        var total = nodes.Sum(node => Math.Max(0, node.SizeOnDisk));
+        var total = nodes.Sum(node => Math.Max(0, GetSize(node)));
 
         if (total <= 0)
         {
@@ -105,7 +118,7 @@ public sealed class DonutChart : FrameworkElement
             drawingContext.DrawEllipse(brush, null, center, radius, radius);
             drawingContext.DrawEllipse(WpfBrushes.White, null, center, innerRadius, innerRadius);
             _hitAreas.Add(new SliceHitArea(nodes[0], 0, 360, innerRadius, radius, center));
-            DrawCenteredText(drawingContext, nodes[0].SizeOnDiskText, center, 15, WpfBrushes.Black);
+            DrawCenteredText(drawingContext, FormatSize(nodes[0]), center, 15, WpfBrushes.Black);
             return;
         }
 
@@ -113,7 +126,7 @@ public sealed class DonutChart : FrameworkElement
         for (var i = 0; i < nodes.Count; i++)
         {
             var node = nodes[i];
-            var sweep = Math.Max(0.35, node.SizeOnDisk / (double)total * 360d);
+            var sweep = Math.Max(0.35, GetSize(node) / (double)total * 360d);
             var geometry = CreateDonutSlice(center, radius, innerRadius, angle, angle + sweep);
             drawingContext.DrawGeometry(new WpfSolidColorBrush(Palette[i % Palette.Length]), null, geometry);
             _hitAreas.Add(new SliceHitArea(node, NormalizeAngle(angle), NormalizeAngle(angle + sweep), innerRadius, radius, center));
@@ -165,8 +178,8 @@ public sealed class DonutChart : FrameworkElement
     private IEnumerable<ScanNode> GetNodes()
     {
         return ItemsSource?.OfType<ScanNode>()
-            .Where(node => node.SizeOnDisk > 0)
-            .OrderByDescending(node => node.SizeOnDisk)
+            .Where(node => GetSize(node) > 0)
+            .OrderByDescending(GetSize)
             .Take(10) ?? [];
     }
 
@@ -177,14 +190,25 @@ public sealed class DonutChart : FrameworkElement
 
     private void ShowSliceToolTip(ScanNode node)
     {
-        var total = GetNodes().Sum(item => Math.Max(0, item.SizeOnDisk));
+        var total = GetNodes().Sum(item => Math.Max(0, GetSize(item)));
+        var size = GetSize(node);
         var percentText = total > 0
-            ? $"{node.SizeOnDisk / (double)total:P1}"
+            ? $"{size / (double)total:P1}"
             : "";
 
         _sliceToolTip.Content =
-            $"{node.DisplayName}{Environment.NewLine}{node.SizeOnDiskText}{Environment.NewLine}{percentText}";
+            $"{node.DisplayName}{Environment.NewLine}{FileSizeFormatter.Format(size)}{Environment.NewLine}{percentText}";
         _sliceToolTip.IsOpen = true;
+    }
+
+    private long GetSize(ScanNode node)
+    {
+        return UseSizeOnDisk ? node.SizeOnDisk : node.LogicalSize;
+    }
+
+    private string FormatSize(ScanNode node)
+    {
+        return FileSizeFormatter.Format(GetSize(node));
     }
 
     private void HideSliceToolTip()
@@ -266,6 +290,14 @@ public sealed class DonutChart : FrameworkElement
 
         chart.ClearHover();
         chart.InvalidateVisual();
+    }
+
+    private static void OnUseSizeOnDiskChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        if (dependencyObject is DonutChart chart)
+        {
+            chart.ClearHover();
+        }
     }
 
     private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
