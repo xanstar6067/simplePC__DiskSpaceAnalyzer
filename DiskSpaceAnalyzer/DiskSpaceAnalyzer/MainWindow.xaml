@@ -128,21 +128,26 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <TextBlock VerticalAlignment="Center"
-                                   FontSize="10"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   Text="▶">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
-                                                     Value="True">
-                                            <Setter Property="Text" Value="▼" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
+                        <Border Background="Transparent"
+                                Width="{TemplateBinding Width}"
+                                Height="{TemplateBinding Height}">
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontSize="10"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       Text="▶">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                                         Value="True">
+                                                <Setter Property="Text" Value="▼" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -281,6 +286,7 @@
                               SelectionMode="Single"
                               SelectionUnit="FullRow"
                               RowHeaderWidth="0"
+                              MouseDoubleClick="ResultsTree_MouseDoubleClick"
                               VirtualizingPanel.IsVirtualizing="True"
                               VirtualizingPanel.VirtualizationMode="Recycling"
                               EnableRowVirtualization="True"
@@ -324,7 +330,9 @@
                                             <ToggleButton Width="16"
                                                           Height="16"
                                                           Margin="0,0,4,0"
-                                                          IsChecked="{Binding IsExpanded, Mode=TwoWay}">
+                                                          Focusable="False"
+                                                          IsChecked="{Binding IsExpanded, Mode=OneWay}"
+                                                          PreviewMouseLeftButtonDown="ExpanderToggle_PreviewMouseLeftButtonDown">
                                                 <ToggleButton.Style>
                                                     <Style TargetType="ToggleButton" BasedOn="{StaticResource ExpanderToggle}">
                                                         <Style.Triggers>
