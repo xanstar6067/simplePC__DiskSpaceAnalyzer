@@ -151,7 +151,7 @@ public sealed class MainViewModel : ViewModelBase
                 OnPropertyChanged(nameof(SelectedFlatNode));
             }
 
-            _selectedChildren = value?.Children;
+            _selectedChildren = value?.Kind == FileSystemItemKind.Folder ? value.Children : null;
             if (_selectedChildren is not null)
             {
                 _selectedChildren.CollectionChanged += SelectedChildrenChanged;
@@ -372,9 +372,7 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
 
-        Roots.Clear();
-        SearchResults.Clear();
-        ClearChartChildren();
+        ClearAnalysisNodes();
 
         cached.IsExpanded = true;
         Roots.Add(cached);
@@ -395,13 +393,7 @@ public sealed class MainViewModel : ViewModelBase
 
     private void ClearAnalysisView(string statusSummary)
     {
-        Roots.Clear();
-        SearchResults.Clear();
-        ClearChartChildren();
-        SelectedNode = null;
-        SelectedChartNode = null;
-        _navigationHistory.Clear();
-        NavigateBackCommand.RaiseCanExecuteChanged();
+        ClearAnalysisNodes();
         ResetProgress();
         CacheWarningText = "";
         StatusSummary = statusSummary;
@@ -424,9 +416,7 @@ public sealed class MainViewModel : ViewModelBase
         IsScanning = true;
         ResetProgress();
         CacheWarningText = "";
-        Roots.Clear();
-        SearchResults.Clear();
-        ClearChartChildren();
+        ClearAnalysisNodes();
         _scanCancellation = new CancellationTokenSource();
 
         var options = new ScanOptions
@@ -558,9 +548,9 @@ public sealed class MainViewModel : ViewModelBase
         root.FileCount = result.FileCount;
         root.DirectoryCount = result.DirectoryCount;
 
-        if (root.Children.Count == 0)
+        if (root.ChildCount == 0)
         {
-            foreach (var child in result.Children)
+            foreach (var child in result.ExistingChildren)
             {
                 root.AddChild(child);
             }
@@ -613,6 +603,9 @@ public sealed class MainViewModel : ViewModelBase
             }
         }
 
+        _navigationHistory.Clear();
+        NavigateBackCommand.RaiseCanExecuteChanged();
+        SelectedChartNode = null;
         SelectedNode = newNode;
         RebuildSearchResults();
     }
@@ -639,6 +632,9 @@ public sealed class MainViewModel : ViewModelBase
             parent.Children.Remove(node);
         }
 
+        _navigationHistory.Clear();
+        NavigateBackCommand.RaiseCanExecuteChanged();
+        SelectedChartNode = null;
         SelectedNode = parent ?? Roots.FirstOrDefault();
         StatusSummary = $"Исключено из анализа: {node.FullPath}";
         RebuildSearchResults();
@@ -771,7 +767,10 @@ public sealed class MainViewModel : ViewModelBase
         foreach (var node in _subscribedFlatNodes.ToList())
         {
             node.PropertyChanged -= FlatNodePropertyChanged;
-            node.Children.CollectionChanged -= FlatNodeChildrenChanged;
+            if (node.CreatedChildren is { } children)
+            {
+                children.CollectionChanged -= FlatNodeChildrenChanged;
+            }
         }
 
         _subscribedFlatNodes.Clear();
@@ -783,14 +782,20 @@ public sealed class MainViewModel : ViewModelBase
 
     private void SubscribeFlatNode(ScanNode node)
     {
+        if (node.Kind != FileSystemItemKind.Folder)
+        {
+            return;
+        }
+
         if (!_subscribedFlatNodes.Add(node))
         {
             return;
         }
 
         node.PropertyChanged += FlatNodePropertyChanged;
-        node.Children.CollectionChanged += FlatNodeChildrenChanged;
-        foreach (var child in node.Children)
+        var children = node.Children;
+        children.CollectionChanged += FlatNodeChildrenChanged;
+        foreach (var child in children)
         {
             SubscribeFlatNode(child);
         }
@@ -804,8 +809,13 @@ public sealed class MainViewModel : ViewModelBase
         }
 
         node.PropertyChanged -= FlatNodePropertyChanged;
-        node.Children.CollectionChanged -= FlatNodeChildrenChanged;
-        foreach (var child in node.Children)
+        if (node.CreatedChildren is not { } children)
+        {
+            return;
+        }
+
+        children.CollectionChanged -= FlatNodeChildrenChanged;
+        foreach (var child in children)
         {
             UnsubscribeFlatNode(child);
         }
@@ -828,7 +838,7 @@ public sealed class MainViewModel : ViewModelBase
             return;
         }
 
-        foreach (var child in node.Children)
+        foreach (var child in node.ExistingChildren)
         {
             AppendVisible(child);
         }
@@ -871,10 +881,12 @@ public sealed class MainViewModel : ViewModelBase
 
     private void RefreshChartChildren()
     {
-        var children = SelectedNode?.Children
-            .OrderByDescending(node => node.SizeOnDisk)
-            .Take(20)
-            .ToList() ?? [];
+        List<ScanNode> children = SelectedNode is null
+            ? []
+            : SelectedNode.ExistingChildren
+                .OrderByDescending(node => node.SizeOnDisk)
+                .Take(20)
+                .ToList();
 
         _isRefreshingChartChildren = true;
         try
@@ -918,7 +930,7 @@ public sealed class MainViewModel : ViewModelBase
     private static IEnumerable<ScanNode> Flatten(ScanNode node)
     {
         yield return node;
-        foreach (var child in node.Children)
+        foreach (var child in node.ExistingChildren)
         {
             foreach (var descendant in Flatten(child))
             {
@@ -949,6 +961,17 @@ public sealed class MainViewModel : ViewModelBase
         LogicalBytes = 0;
         SizeOnDiskBytes = 0;
         CurrentPath = "";
+    }
+
+    private void ClearAnalysisNodes()
+    {
+        SelectedNode = null;
+        SelectedChartNode = null;
+        _navigationHistory.Clear();
+        NavigateBackCommand.RaiseCanExecuteChanged();
+        Roots.Clear();
+        SearchResults.Clear();
+        ClearChartChildren();
     }
 
     private static bool ConfirmFullSystemScan()

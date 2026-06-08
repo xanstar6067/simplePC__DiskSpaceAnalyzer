@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Media;
 using DiskSpaceAnalyzer.Services;
@@ -12,6 +13,9 @@ namespace DiskSpaceAnalyzer.Models;
 
 public sealed class ScanNode : ViewModelBase
 {
+    private static readonly IReadOnlyList<ScanNode> EmptyChildren = Array.Empty<ScanNode>();
+
+    private ObservableCollection<ScanNode>? _children;
     private long _logicalSize;
     private long _sizeOnDisk;
     private long _fileCount;
@@ -21,12 +25,25 @@ public sealed class ScanNode : ViewModelBase
     private bool _isExpanded;
     private bool _isSelected;
 
-    public ScanNode()
+    public ObservableCollection<ScanNode> Children
     {
-        Children = [];
+        get
+        {
+            if (_children is null)
+            {
+                _children = [];
+                _children.CollectionChanged += ChildrenChanged;
+            }
+
+            return _children;
+        }
     }
 
-    public ObservableCollection<ScanNode> Children { get; }
+    public int ChildCount => _children?.Count ?? 0;
+
+    internal IReadOnlyList<ScanNode> ExistingChildren => _children is null ? EmptyChildren : _children;
+
+    internal ObservableCollection<ScanNode>? CreatedChildren => _children;
 
     public ScanNode? Parent { get; set; }
 
@@ -188,12 +205,22 @@ public sealed class ScanNode : ViewModelBase
 
     public void SortChildrenBySize()
     {
-        var sorted = Children.OrderByDescending(child => child.SizeOnDisk).ThenBy(child => child.DisplayName).ToList();
-        Children.Clear();
+        if (_children is null || _children.Count < 2)
+        {
+            return;
+        }
+
+        var sorted = _children.OrderByDescending(child => child.SizeOnDisk).ThenBy(child => child.DisplayName).ToList();
+        _children.Clear();
         foreach (var child in sorted)
         {
             child.Parent = this;
-            Children.Add(child);
+            _children.Add(child);
         }
+    }
+
+    private void ChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        OnPropertyChanged(nameof(ChildCount));
     }
 }

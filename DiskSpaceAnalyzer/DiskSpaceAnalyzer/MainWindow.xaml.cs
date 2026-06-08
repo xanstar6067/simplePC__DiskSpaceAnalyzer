@@ -16,7 +16,7 @@ public partial class MainWindow : Window
 
     private void ExpanderToggle_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is ToggleButton { DataContext: ScanNode node } && node.Children.Count > 0)
+        if (sender is ToggleButton { DataContext: ScanNode node } && node.ChildCount > 0)
         {
             node.IsExpanded = !node.IsExpanded;
             e.Handled = true;
@@ -26,7 +26,7 @@ public partial class MainWindow : Window
     private void ResultsTree_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left &&
-            ResultsTree.SelectedItem is ScanNode { Children.Count: > 0 } node)
+            ResultsTree.SelectedItem is ScanNode { ChildCount: > 0 } node)
         {
             node.IsExpanded = !node.IsExpanded;
             e.Handled = true;

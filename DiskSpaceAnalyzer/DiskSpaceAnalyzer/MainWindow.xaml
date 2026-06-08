@@ -336,7 +336,7 @@
                                                 <ToggleButton.Style>
                                                     <Style TargetType="ToggleButton" BasedOn="{StaticResource ExpanderToggle}">
                                                         <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding Children.Count}" Value="0">
+                                                            <DataTrigger Binding="{Binding ChildCount}" Value="0">
                                                                 <Setter Property="Visibility" Value="Hidden" />
                                                             </DataTrigger>
                                                         </Style.Triggers>

@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DiskSpaceAnalyzer.Models;
@@ -7,17 +9,21 @@ namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
+    private const int CurrentFormatVersion = 2;
+    private const int StreamBufferSize = 64 * 1024;
+
     private readonly string _cacheDirectory;
-    private readonly string _legacyCachePath;
-    private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
-    private readonly Dictionary<string, Dictionary<string, CachedSnapshot>> _snapshotsByFile = new(StringComparer.OrdinalIgnoreCase);
+    private readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 
     public AnalysisCacheService()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         _cacheDirectory = Path.Combine(appData, "simplePC DiskSpaceAnalyzer");
         Directory.CreateDirectory(_cacheDirectory);
-        _legacyCachePath = Path.Combine(_cacheDirectory, "analysis-cache.json");
     }
 
     public bool TryRestoreSnapshot(string path, bool analyzeSizeOnDisk, out ScanNode? node)
@@ -26,49 +32,78 @@ public sealed class AnalysisCacheService
 
         var normalized = PathRiskClassifier.Normalize(path);
         var cachePath = GetCachePath(normalized);
-        var snapshots = EnsureLoaded(cachePath);
-        if (!snapshots.TryGetValue(normalized, out var snapshot))
+        if (!File.Exists(cachePath))
         {
             return false;
         }
 
-        if (snapshot.AnalyzeSizeOnDisk.GetValueOrDefault(true) != analyzeSizeOnDisk ||
-            !MatchesCurrentMetadata(snapshot))
+        try
         {
+            using var stream = new FileStream(
+                cachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                StreamBufferSize,
+                FileOptions.SequentialScan);
+            using var reader = new StreamReader(
+                stream,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true,
+                StreamBufferSize);
+
+            var headerLine = reader.ReadLine();
+            if (string.IsNullOrWhiteSpace(headerLine))
+            {
+                return false;
+            }
+
+            var header = JsonSerializer.Deserialize<CachedSnapshotHeader>(headerLine, _jsonOptions);
+            if (header is null ||
+                header.FormatVersion != CurrentFormatVersion ||
+                !string.Equals(header.Path, normalized, StringComparison.OrdinalIgnoreCase) ||
+                header.AnalyzeSizeOnDisk.GetValueOrDefault(true) != analyzeSizeOnDisk ||
+                !MatchesCurrentMetadata(header.Path, header.Metadata))
+            {
+                return false;
+            }
+
+            node = ReadNodeTree(reader);
+            if (node is null)
+            {
+                return false;
+            }
+
+            node.StatusText = $"Из кеша: {header.CachedAt.LocalDateTime:g}";
+            return true;
+        }
+        catch
+        {
+            node = null;
             return false;
         }
-
-        node = ToNode(snapshot.Node, null);
-        node.StatusText = $"Из кеша: {snapshot.CachedAt.LocalDateTime:g}";
-        return true;
     }
 
     public void StoreSnapshot(ScanNode node, bool analyzeSizeOnDisk)
     {
         var normalized = PathRiskClassifier.Normalize(node.FullPath);
-        var cachePath = GetCachePath(normalized);
-        var snapshots = EnsureLoaded(cachePath);
-
-        var snapshot = new CachedSnapshot
+        var header = new CachedSnapshotHeader
         {
+            FormatVersion = CurrentFormatVersion,
             Path = normalized,
             CachedAt = DateTimeOffset.UtcNow,
             AnalyzeSizeOnDisk = analyzeSizeOnDisk,
-            Node = FromNode(node),
             Metadata = ReadMetadata(node.FullPath)
         };
 
-        snapshots[snapshot.Path] = snapshot;
-        Save(cachePath, snapshots);
+        Save(GetCachePath(normalized), header, node);
     }
 
     public void Clear()
     {
-        _snapshotsByFile.Clear();
-
         try
         {
-            foreach (var cachePath in Directory.EnumerateFiles(_cacheDirectory, "analysis-cache*.json"))
+            foreach (var cachePath in Directory.EnumerateFiles(_cacheDirectory, "analysis-cache*"))
             {
                 File.Delete(cachePath);
             }
@@ -79,115 +114,138 @@ public sealed class AnalysisCacheService
         }
     }
 
-    private Dictionary<string, CachedSnapshot> EnsureLoaded(string cachePath)
+    private void Save(string cachePath, CachedSnapshotHeader header, ScanNode root)
     {
-        if (_snapshotsByFile.TryGetValue(cachePath, out var loaded))
-        {
-            return loaded;
-        }
-
-        var snapshots = new Dictionary<string, CachedSnapshot>(StringComparer.OrdinalIgnoreCase);
-        if (File.Exists(cachePath))
-        {
-            try
-            {
-                var text = File.ReadAllText(cachePath);
-                snapshots = JsonSerializer.Deserialize<Dictionary<string, CachedSnapshot>>(text, _jsonOptions) ?? new(StringComparer.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                snapshots = new(StringComparer.OrdinalIgnoreCase);
-            }
-        }
-
-        ImportLegacySnapshots(cachePath, snapshots);
-        _snapshotsByFile[cachePath] = snapshots;
-        return snapshots;
-    }
-
-    private void ImportLegacySnapshots(string cachePath, Dictionary<string, CachedSnapshot> snapshots)
-    {
-        if (!File.Exists(_legacyCachePath) || string.Equals(cachePath, _legacyCachePath, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
+        var temporaryPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
 
         try
         {
-            var text = File.ReadAllText(_legacyCachePath);
-            var legacy = JsonSerializer.Deserialize<Dictionary<string, CachedSnapshot>>(text, _jsonOptions);
-            if (legacy is null)
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       StreamBufferSize,
+                       FileOptions.SequentialScan))
             {
-                return;
+                WriteJsonLine(stream, header);
+                WriteNodeTree(stream, root, depth: 0);
+                stream.Flush(flushToDisk: true);
             }
 
-            var changed = false;
-            foreach (var item in legacy.Where(item => string.Equals(GetCachePath(item.Key), cachePath, StringComparison.OrdinalIgnoreCase)))
-            {
-                snapshots.TryAdd(item.Key, item.Value);
-                changed = true;
-            }
-
-            if (changed)
-            {
-                Save(cachePath, snapshots);
-            }
+            File.Move(temporaryPath, cachePath, overwrite: true);
         }
         catch
         {
-            // Cache migration failures should not affect scanning.
-        }
-    }
-
-    private void Save(string cachePath, Dictionary<string, CachedSnapshot> snapshots)
-    {
-        try
-        {
-            var text = JsonSerializer.Serialize(snapshots, _jsonOptions);
-            File.WriteAllText(cachePath, text);
-        }
-        catch
-        {
+            TryDelete(temporaryPath);
             // Cache failures should not affect scanning.
         }
     }
 
-    private string GetCachePath(string path)
+    private void WriteNodeTree(Stream stream, ScanNode node, int depth)
     {
-        var normalized = PathRiskClassifier.Normalize(path);
-        var root = Path.GetPathRoot(normalized);
-        var cacheKey = string.IsNullOrWhiteSpace(root) ? normalized : root;
-
-        if (cacheKey.Length >= 2 && cacheKey[1] == ':')
+        var record = new CachedNodeRecord
         {
-            return Path.Combine(_cacheDirectory, $"analysis-cache-{char.ToUpperInvariant(cacheKey[0])}.json");
-        }
+            Depth = depth,
+            FullPath = node.FullPath,
+            Name = node.Name,
+            Kind = node.Kind,
+            Risk = node.Risk,
+            StatusText = node.StatusText,
+            LogicalSize = node.LogicalSize,
+            SizeOnDisk = node.SizeOnDisk,
+            FileCount = node.FileCount,
+            DirectoryCount = node.DirectoryCount,
+            ModifiedAt = node.ModifiedAt,
+            FileId = node.FileId
+        };
 
-        var safeName = string.Join("_", cacheKey.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
-        if (string.IsNullOrWhiteSpace(safeName))
+        WriteJsonLine(stream, record);
+        foreach (var child in node.ExistingChildren)
         {
-            safeName = "paths";
+            WriteNodeTree(stream, child, depth + 1);
         }
-
-        return Path.Combine(_cacheDirectory, $"analysis-cache-{safeName}.json");
     }
 
-    private static bool MatchesCurrentMetadata(CachedSnapshot snapshot)
+    private void WriteJsonLine<T>(Stream stream, T value)
     {
-        var current = ReadMetadata(snapshot.Path);
-        if (!current.Exists || current.Attributes != snapshot.Metadata.Attributes)
+        JsonSerializer.Serialize(stream, value, _jsonOptions);
+        stream.WriteByte((byte)'\n');
+    }
+
+    private ScanNode? ReadNodeTree(StreamReader reader)
+    {
+        ScanNode? root = null;
+        var ancestors = new List<ScanNode>();
+
+        while (reader.ReadLine() is { } line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var record = JsonSerializer.Deserialize<CachedNodeRecord>(line, _jsonOptions);
+            if (record is null ||
+                record.Depth < 0 ||
+                (root is null && record.Depth != 0) ||
+                (root is not null && record.Depth == 0) ||
+                record.Depth > ancestors.Count)
+            {
+                return null;
+            }
+
+            var current = ToNode(record);
+            if (record.Depth == 0)
+            {
+                root = current;
+            }
+            else
+            {
+                ancestors[record.Depth - 1].AddChild(current);
+            }
+
+            if (ancestors.Count == record.Depth)
+            {
+                ancestors.Add(current);
+            }
+            else
+            {
+                ancestors[record.Depth] = current;
+                if (ancestors.Count > record.Depth + 1)
+                {
+                    ancestors.RemoveRange(record.Depth + 1, ancestors.Count - record.Depth - 1);
+                }
+            }
+        }
+
+        return root;
+    }
+
+    private string GetCachePath(string path)
+    {
+        var normalizedCacheKey = PathRiskClassifier.Normalize(path).ToUpperInvariant();
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedCacheKey));
+        var hash = Convert.ToHexString(hashBytes);
+        return Path.Combine(_cacheDirectory, $"analysis-cache-v{CurrentFormatVersion}-{hash}.jsonl");
+    }
+
+    private static bool MatchesCurrentMetadata(string path, CachedMetadata metadata)
+    {
+        var current = ReadMetadata(path);
+        if (!current.Exists || current.Attributes != metadata.Attributes)
         {
             return false;
         }
 
-        if (IsDriveRoot(snapshot.Path))
+        if (IsDriveRoot(path))
         {
-            return string.IsNullOrWhiteSpace(snapshot.Metadata.FileId) || current.FileId == snapshot.Metadata.FileId;
+            return string.IsNullOrWhiteSpace(metadata.FileId) || current.FileId == metadata.FileId;
         }
 
-        return current.Length == snapshot.Metadata.Length &&
-               current.LastWriteUtc == snapshot.Metadata.LastWriteUtc &&
-               (string.IsNullOrWhiteSpace(snapshot.Metadata.FileId) || current.FileId == snapshot.Metadata.FileId);
+        return current.Length == metadata.Length &&
+               current.LastWriteUtc == metadata.LastWriteUtc &&
+               (string.IsNullOrWhiteSpace(metadata.FileId) || current.FileId == metadata.FileId);
     }
 
     private static bool IsDriveRoot(string path)
@@ -220,26 +278,7 @@ public sealed class AnalysisCacheService
         }
     }
 
-    private static CachedScanNode FromNode(ScanNode node)
-    {
-        return new CachedScanNode
-        {
-            FullPath = node.FullPath,
-            Name = node.Name,
-            Kind = node.Kind,
-            Risk = node.Risk,
-            StatusText = node.StatusText,
-            LogicalSize = node.LogicalSize,
-            SizeOnDisk = node.SizeOnDisk,
-            FileCount = node.FileCount,
-            DirectoryCount = node.DirectoryCount,
-            ModifiedAt = node.ModifiedAt,
-            FileId = node.FileId,
-            Children = node.Children.Select(FromNode).ToList()
-        };
-    }
-
-    private static ScanNode ToNode(CachedScanNode cached, ScanNode? parent)
+    private static ScanNode ToNode(CachedNodeRecord cached)
     {
         var node = new ScanNode
         {
@@ -247,8 +286,7 @@ public sealed class AnalysisCacheService
             Name = cached.Name,
             Kind = cached.Kind,
             ModifiedAt = cached.ModifiedAt,
-            FileId = cached.FileId,
-            Parent = parent
+            FileId = cached.FileId
         };
 
         node.Risk = cached.Risk;
@@ -257,17 +295,28 @@ public sealed class AnalysisCacheService
         node.SizeOnDisk = cached.SizeOnDisk;
         node.FileCount = cached.FileCount;
         node.DirectoryCount = cached.DirectoryCount;
-
-        foreach (var child in cached.Children)
-        {
-            node.AddChild(ToNode(child, node));
-        }
-
         return node;
     }
 
-    private sealed class CachedSnapshot
+    private static void TryDelete(string path)
     {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // A stale temporary cache file is harmless.
+        }
+    }
+
+    private sealed class CachedSnapshotHeader
+    {
+        public int FormatVersion { get; set; }
+
         public string Path { get; set; } = string.Empty;
 
         public DateTimeOffset CachedAt { get; set; }
@@ -275,8 +324,6 @@ public sealed class AnalysisCacheService
         public bool? AnalyzeSizeOnDisk { get; set; }
 
         public CachedMetadata Metadata { get; set; } = new();
-
-        public CachedScanNode Node { get; set; } = new();
     }
 
     private sealed class CachedMetadata
@@ -287,22 +334,24 @@ public sealed class AnalysisCacheService
 
         public DateTime LastWriteUtc { get; set; }
 
-        [JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter<FileAttributes>))]
         public FileAttributes Attributes { get; set; }
 
         public string FileId { get; set; } = string.Empty;
     }
 
-    private sealed class CachedScanNode
+    private sealed class CachedNodeRecord
     {
+        public int Depth { get; set; }
+
         public string FullPath { get; set; } = string.Empty;
 
         public string Name { get; set; } = string.Empty;
 
-        [JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter<FileSystemItemKind>))]
         public FileSystemItemKind Kind { get; set; }
 
-        [JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter<RiskLevel>))]
         public RiskLevel Risk { get; set; }
 
         public string StatusText { get; set; } = string.Empty;
@@ -318,7 +367,5 @@ public sealed class AnalysisCacheService
         public DateTimeOffset? ModifiedAt { get; set; }
 
         public string FileId { get; set; } = string.Empty;
-
-        public List<CachedScanNode> Children { get; set; } = [];
     }
 }
