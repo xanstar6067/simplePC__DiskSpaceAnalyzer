@@ -40,7 +40,8 @@ public sealed class DiskScanner
             }
 
             var counters = new ScanCounters();
-            var root = ScanEntry(normalized, fileSystemInfo: null, options, counters, progress, cancellationToken, isRootChild: true);
+            var activeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var root = ScanEntry(normalized, fileSystemInfo: null, options, counters, progress, cancellationToken, isRootChild: true, activeDirectories);
             root.IsExpanded = true;
 
             if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
@@ -59,7 +60,8 @@ public sealed class DiskScanner
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
-        bool isRootChild)
+        bool isRootChild,
+        HashSet<string> activeDirectories)
     {
         counters.CurrentPath = path;
         ReportProgress(counters, progress);
@@ -72,7 +74,8 @@ public sealed class DiskScanner
         try
         {
             var attributes = fileSystemInfo?.Attributes ?? File.GetAttributes(path);
-            if (attributes.HasFlag(FileAttributes.ReparsePoint))
+            if (attributes.HasFlag(FileAttributes.ReparsePoint) &&
+                (!options.IncludeSystemDirectories || !attributes.HasFlag(FileAttributes.Directory)))
             {
                 var linkNode = CreateBaseNode(path, FileSystemItemKind.Link, _classifier.Classify(path), "Ссылка пропущена");
                 FillMetadata(linkNode, fileSystemInfo);
@@ -81,7 +84,7 @@ public sealed class DiskScanner
 
             if (attributes.HasFlag(FileAttributes.Directory))
             {
-                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild);
+                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild, activeDirectories);
             }
 
             return ScanFile(path, fileSystemInfo, options, counters);
@@ -112,7 +115,8 @@ public sealed class DiskScanner
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
-        bool isRootChild)
+        bool isRootChild,
+        HashSet<string> activeDirectories)
     {
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
         var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
@@ -125,6 +129,34 @@ public sealed class DiskScanner
             return node;
         }
 
+        var directoryIdentity = GetDirectoryIdentity(path, fileSystemInfo);
+        if (!activeDirectories.Add(directoryIdentity))
+        {
+            node.Kind = FileSystemItemKind.Link;
+            node.StatusText = "Циклическая ссылка";
+            return node;
+        }
+
+        try
+        {
+            return ScanDirectoryContents(node, path, options, counters, progress, cancellationToken, isRootChild, activeDirectories);
+        }
+        finally
+        {
+            activeDirectories.Remove(directoryIdentity);
+        }
+    }
+
+    private ScanNode ScanDirectoryContents(
+        ScanNode node,
+        string path,
+        ScanOptions options,
+        ScanCounters counters,
+        IProgress<ScanProgressInfo>? progress,
+        CancellationToken cancellationToken,
+        bool isRootChild,
+        HashSet<string> activeDirectories)
+    {
         counters.Directories++;
         node.StatusText = options.IncludeSystemDirectories || !_classifier.IsWindowsRoot(path)
             ? "Сканируется"
@@ -161,7 +193,7 @@ public sealed class DiskScanner
                     break;
                 }
 
-                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false);
+                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false, activeDirectories);
                 node.AddChild(child);
                 Accumulate(node, child);
 
@@ -201,6 +233,20 @@ public sealed class DiskScanner
         }
 
         return node;
+    }
+
+    private static string GetDirectoryIdentity(string path, FileSystemInfo? fileSystemInfo)
+    {
+        try
+        {
+            var info = fileSystemInfo as DirectoryInfo ?? new DirectoryInfo(path);
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            return PathRiskClassifier.Normalize(target?.FullName ?? info.FullName);
+        }
+        catch
+        {
+            return PathRiskClassifier.Normalize(path);
+        }
     }
 
     private IEnumerable<FileSystemInfo> GetDirectoryEntries(string path, ScanOptions options)
