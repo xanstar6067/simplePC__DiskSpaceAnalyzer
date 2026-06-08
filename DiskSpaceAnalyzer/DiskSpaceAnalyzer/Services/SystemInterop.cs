@@ -22,10 +22,26 @@ public static class SystemInterop
     private const int StandardQuery = 0;
     private const int BusTypeNvme = 17;
 
-    public static long GetSizeOnDisk(string path, long logicalSize)
+    public static long GetSizeOnDisk(string path, long logicalSize, bool isDirectory = false)
     {
         try
         {
+            var flags = isDirectory ? FileFlagBackupSemantics : 0u;
+            using var handle = CreateFileW(
+                path,
+                GenericRead,
+                FileShareRead | FileShareWrite | FileShareDelete,
+                IntPtr.Zero,
+                OpenExisting,
+                flags,
+                IntPtr.Zero);
+
+            if (!handle.IsInvalid &&
+                GetFileInformationByHandleEx(handle, FileInfoByHandleClass.FileStandardInfo, out FileStandardInfo standardInfo, Marshal.SizeOf<FileStandardInfo>()))
+            {
+                return standardInfo.AllocationSize;
+            }
+
             var low = GetCompressedFileSizeW(path, out var high);
             if (low == InvalidFileSize)
             {
@@ -217,6 +233,14 @@ public static class SystemInterop
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle hFile,
+        FileInfoByHandleClass fileInformationClass,
+        out FileStandardInfo lpFileInformation,
+        int dwBufferSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DeviceIoControl(
         SafeFileHandle hDevice,
         uint dwIoControlCode,
@@ -281,5 +305,24 @@ public static class SystemInterop
 
         [MarshalAs(UnmanagedType.U1)]
         public bool IncursSeekPenalty;
+    }
+
+    private enum FileInfoByHandleClass
+    {
+        FileStandardInfo = 1
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileStandardInfo
+    {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+
+        [MarshalAs(UnmanagedType.U1)]
+        public bool DeletePending;
+
+        [MarshalAs(UnmanagedType.U1)]
+        public bool Directory;
     }
 }

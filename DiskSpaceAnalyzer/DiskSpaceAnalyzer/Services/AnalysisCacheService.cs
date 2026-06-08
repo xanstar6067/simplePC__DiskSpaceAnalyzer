@@ -11,7 +11,7 @@ namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
-    private const int CurrentFormatVersion = 3;
+    private const int CurrentFormatVersion = 4;
     private const int StreamBufferSize = 64 * 1024;
     private const int HashLength = 32;
     private const int IndexHeaderSize = 16;

@@ -133,6 +133,10 @@ public sealed class DiskScanner
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
         var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
         FillMetadata(node, fileSystemInfo);
+        if (options.AnalyzeSizeOnDisk)
+        {
+            node.SizeOnDisk = SystemInterop.GetSizeOnDisk(path, 0, isDirectory: true);
+        }
 
         if (decision.ShouldSkip)
         {
@@ -171,6 +175,7 @@ public sealed class DiskScanner
         AnalysisCacheService.SnapshotWriter? cacheWriter)
     {
         counters.Directories++;
+        counters.SizeOnDiskBytes += node.SizeOnDisk;
         node.StatusText = options.IncludeSystemDirectories || !_classifier.IsWindowsRoot(path)
             ? "Сканируется"
             : "Частичный безопасный анализ";
