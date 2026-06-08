@@ -104,77 +104,46 @@
             <Setter Property="FontSize" Value="18" />
         </Style>
 
-        <HierarchicalDataTemplate DataType="{x:Type models:ScanNode}" ItemsSource="{Binding Children}">
-            <Grid Margin="0,2"
-                  Width="{Binding RelativeSource={RelativeSource AncestorType=TreeView}, Path=ActualWidth}">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="100" />
-                    <ColumnDefinition Width="100" />
-                    <ColumnDefinition Width="82" />
-                    <ColumnDefinition Width="108" />
-                    <ColumnDefinition Width="118" />
-                </Grid.ColumnDefinitions>
+        <Style x:Key="RightAlignCell" TargetType="TextBlock">
+            <Setter Property="TextAlignment" Value="Right" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
 
-                <TextBlock Grid.Column="0"
-                           Text="{Binding DisplayName}"
-                           TextTrimming="CharacterEllipsis"
-                           VerticalAlignment="Center"
-                           Foreground="#17202A" />
-                <TextBlock Grid.Column="1"
-                           Text="{Binding LogicalSizeText}"
-                           TextAlignment="Right"
-                           Foreground="#17202A"
-                           Margin="10,0,0,0" />
-                <TextBlock Grid.Column="2"
-                           Text="{Binding SizeOnDiskText}"
-                           TextAlignment="Right"
-                           Foreground="#17202A"
-                           Margin="10,0,0,0" />
-                <TextBlock Grid.Column="3"
-                           Text="{Binding PercentOfParentText}"
-                           TextAlignment="Right"
-                           Foreground="{StaticResource MutedTextBrush}"
-                           Margin="10,0,0,0" />
-                <TextBlock Grid.Column="4"
-                           Text="{Binding RiskText}"
-                           Foreground="{Binding RiskBrush}"
-                           FontWeight="SemiBold"
-                           Margin="12,0,0,0" />
-                <TextBlock Grid.Column="5"
-                           Text="{Binding StatusText}"
-                           Foreground="{StaticResource MutedTextBrush}"
-                           TextTrimming="CharacterEllipsis"
-                           Margin="10,0,0,0" />
-            </Grid>
-        </HierarchicalDataTemplate>
+        <Style x:Key="RiskCell" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{Binding RiskBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
 
-        <Style TargetType="TreeViewItem">
-            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
-            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
-            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" />
-            <Setter Property="ContextMenu">
+        <Style x:Key="MutedCell" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="ExpanderToggle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
                 <Setter.Value>
-                    <ContextMenu>
-                        <MenuItem Header="Показать в Проводнике"
-                                  Command="{Binding PlacementTarget.Tag.OpenInExplorerCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                        <MenuItem Header="Копировать путь"
-                                  Command="{Binding PlacementTarget.Tag.CopyPathCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                        <Separator />
-                        <MenuItem Header="Обновить эту папку"
-                                  Command="{Binding PlacementTarget.Tag.RefreshNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                        <MenuItem Header="Исключить из анализа"
-                                  Command="{Binding PlacementTarget.Tag.ExcludeNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                        <Separator />
-                        <MenuItem Header="Сведения"
-                                  Command="{Binding PlacementTarget.Tag.ShowDetailsCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                    </ContextMenu>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="10"
+                                   Foreground="{StaticResource MutedTextBrush}"
+                                   Text="▶">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                                     Value="True">
+                                            <Setter Property="Text" Value="▼" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -294,33 +263,108 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Grid Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="100" />
-                            <ColumnDefinition Width="100" />
-                            <ColumnDefinition Width="82" />
-                            <ColumnDefinition Width="108" />
-                            <ColumnDefinition Width="118" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Имя" FontWeight="SemiBold" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="1" Text="Размер" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="2" Text="На диске" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="3" Text="Доля" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="4" Text="Статус" FontWeight="SemiBold" Margin="12,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="5" Text="Обработка" FontWeight="SemiBold" Margin="10,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
-                    </Grid>
-
-                    <TreeView x:Name="ResultsTree"
+                    <DataGrid x:Name="ResultsTree"
                               Grid.Row="1"
-                              ItemsSource="{Binding Roots}"
-                              SelectedItemChanged="ResultsTree_SelectedItemChanged"
+                              ItemsSource="{Binding FlatNodes}"
+                              SelectedItem="{Binding SelectedFlatNode, Mode=TwoWay}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              IsReadOnly="True"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal"
+                              HorizontalGridLinesBrush="#E7EBF0"
                               BorderThickness="0"
-                              HorizontalContentAlignment="Stretch"
+                              RowBackground="Transparent"
+                              AlternatingRowBackground="#FAFBFC"
+                              AlternationCount="2"
+                              SelectionMode="Single"
+                              SelectionUnit="FullRow"
+                              RowHeaderWidth="0"
                               VirtualizingPanel.IsVirtualizing="True"
                               VirtualizingPanel.VirtualizationMode="Recycling"
+                              EnableRowVirtualization="True"
+                              ScrollViewer.CanContentScroll="True"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                              ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Setter Property="ContextMenu">
+                                    <Setter.Value>
+                                        <ContextMenu>
+                                            <MenuItem Header="Показать в Проводнике"
+                                                      Command="{Binding PlacementTarget.Tag.OpenInExplorerCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <MenuItem Header="Копировать путь"
+                                                      Command="{Binding PlacementTarget.Tag.CopyPathCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <Separator />
+                                            <MenuItem Header="Обновить эту папку"
+                                                      Command="{Binding PlacementTarget.Tag.RefreshNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <MenuItem Header="Исключить из анализа"
+                                                      Command="{Binding PlacementTarget.Tag.ExcludeNodeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <Separator />
+                                            <MenuItem Header="Сведения"
+                                                      Command="{Binding PlacementTarget.Tag.ShowDetailsCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                        </ContextMenu>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Имя" Width="*" MinWidth="160">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal"
+                                                    Margin="{Binding IndentMargin}">
+                                            <ToggleButton Width="16"
+                                                          Height="16"
+                                                          Margin="0,0,4,0"
+                                                          IsChecked="{Binding IsExpanded, Mode=TwoWay}">
+                                                <ToggleButton.Style>
+                                                    <Style TargetType="ToggleButton" BasedOn="{StaticResource ExpanderToggle}">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Children.Count}" Value="0">
+                                                                <Setter Property="Visibility" Value="Hidden" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </ToggleButton.Style>
+                                            </ToggleButton>
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="#17202A" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Размер"
+                                                Width="100"
+                                                Binding="{Binding LogicalSizeText}"
+                                                ElementStyle="{StaticResource RightAlignCell}" />
+                            <DataGridTextColumn Header="На диске"
+                                                Width="100"
+                                                Binding="{Binding SizeOnDiskText}"
+                                                ElementStyle="{StaticResource RightAlignCell}" />
+                            <DataGridTextColumn Header="Доля"
+                                                Width="72"
+                                                Binding="{Binding PercentOfParentText}"
+                                                ElementStyle="{StaticResource RightAlignCell}" />
+                            <DataGridTextColumn Header="Статус"
+                                                Width="108"
+                                                Binding="{Binding RiskText}"
+                                                ElementStyle="{StaticResource RiskCell}" />
+                            <DataGridTextColumn Header="Обработка"
+                                                Width="118"
+                                                Binding="{Binding StatusText}"
+                                                ElementStyle="{StaticResource MutedCell}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
                 </Grid>
             </Border>
 

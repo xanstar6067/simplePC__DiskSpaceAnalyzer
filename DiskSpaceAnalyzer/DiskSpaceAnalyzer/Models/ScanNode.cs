@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Windows;
 using System.Windows.Media;
 using DiskSpaceAnalyzer.Services;
 using DiskSpaceAnalyzer.ViewModels;
@@ -107,6 +108,24 @@ public sealed class ScanNode : ViewModelBase
         get => _isSelected;
         set => SetProperty(ref _isSelected, value);
     }
+
+    public int Level
+    {
+        get
+        {
+            var level = 0;
+            var parent = Parent;
+            while (parent is not null)
+            {
+                level++;
+                parent = parent.Parent;
+            }
+
+            return level;
+        }
+    }
+
+    public Thickness IndentMargin => new(Level * 16, 0, 0, 0);
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? FullPath : Name;
 

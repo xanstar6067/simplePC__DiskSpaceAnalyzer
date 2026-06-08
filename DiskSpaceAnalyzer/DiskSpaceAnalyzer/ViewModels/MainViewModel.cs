@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
@@ -22,8 +23,10 @@ public sealed class MainViewModel : ViewModelBase
     private DiskScanner _scanner;
     private CancellationTokenSource? _scanCancellation;
     private INotifyCollectionChanged? _selectedChildren;
+    private readonly HashSet<ScanNode> _subscribedFlatNodes = [];
     private DriveSummary? _selectedDrive;
     private ScanNode? _selectedNode;
+    private ScanNode? _selectedFlatNode;
     private ScanNode? _selectedChartNode;
     private string _cacheWarningText = "";
     private string _currentPath = "";
@@ -56,6 +59,7 @@ public sealed class MainViewModel : ViewModelBase
         ShowDetailsCommand = new RelayCommand(parameter => ShowDetails(parameter as ScanNode), parameter => parameter is ScanNode);
         ClearCacheCommand = new RelayCommand(_ => ClearCache(), _ => !IsScanning);
 
+        Roots.CollectionChanged += RootsChanged;
         LoadDrives();
 
         _driveRefreshTimer = new DispatcherTimer
@@ -69,6 +73,8 @@ public sealed class MainViewModel : ViewModelBase
     public ObservableCollection<DriveSummary> AvailableDrives { get; } = [];
 
     public ObservableCollection<ScanNode> Roots { get; } = [];
+
+    public ObservableCollection<ScanNode> FlatNodes { get; } = [];
 
     public ObservableCollection<ScanNode> ChartChildren { get; } = [];
 
@@ -139,6 +145,12 @@ public sealed class MainViewModel : ViewModelBase
             }
 
             _selectedNode = value;
+            if (_selectedFlatNode != value)
+            {
+                _selectedFlatNode = value;
+                OnPropertyChanged(nameof(SelectedFlatNode));
+            }
+
             _selectedChildren = value?.Children;
             if (_selectedChildren is not null)
             {
@@ -149,6 +161,18 @@ public sealed class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(HasSelectedNode));
             OnPropertyChanged(nameof(SelectedNodeSafetyText));
             QueueChartRefresh();
+        }
+    }
+
+    public ScanNode? SelectedFlatNode
+    {
+        get => _selectedFlatNode;
+        set
+        {
+            if (SetProperty(ref _selectedFlatNode, value))
+            {
+                SelectedNode = value;
+            }
         }
     }
 
@@ -695,6 +719,119 @@ public sealed class MainViewModel : ViewModelBase
     private void SelectedChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         QueueChartRefresh();
+    }
+
+    private void RootsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        UpdateFlatNodeSubscriptions(e);
+        RebuildFlatNodes();
+    }
+
+    private void FlatNodeChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        UpdateFlatNodeSubscriptions(e);
+        RebuildFlatNodes();
+    }
+
+    private void FlatNodePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ScanNode.IsExpanded))
+        {
+            RebuildFlatNodes();
+        }
+    }
+
+    private void UpdateFlatNodeSubscriptions(NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            ResetFlatNodeSubscriptions();
+            return;
+        }
+
+        if (e.OldItems is not null)
+        {
+            foreach (ScanNode node in e.OldItems)
+            {
+                UnsubscribeFlatNode(node);
+            }
+        }
+
+        if (e.NewItems is not null)
+        {
+            foreach (ScanNode node in e.NewItems)
+            {
+                SubscribeFlatNode(node);
+            }
+        }
+    }
+
+    private void ResetFlatNodeSubscriptions()
+    {
+        foreach (var node in _subscribedFlatNodes.ToList())
+        {
+            node.PropertyChanged -= FlatNodePropertyChanged;
+            node.Children.CollectionChanged -= FlatNodeChildrenChanged;
+        }
+
+        _subscribedFlatNodes.Clear();
+        foreach (var root in Roots)
+        {
+            SubscribeFlatNode(root);
+        }
+    }
+
+    private void SubscribeFlatNode(ScanNode node)
+    {
+        if (!_subscribedFlatNodes.Add(node))
+        {
+            return;
+        }
+
+        node.PropertyChanged += FlatNodePropertyChanged;
+        node.Children.CollectionChanged += FlatNodeChildrenChanged;
+        foreach (var child in node.Children)
+        {
+            SubscribeFlatNode(child);
+        }
+    }
+
+    private void UnsubscribeFlatNode(ScanNode node)
+    {
+        if (!_subscribedFlatNodes.Remove(node))
+        {
+            return;
+        }
+
+        node.PropertyChanged -= FlatNodePropertyChanged;
+        node.Children.CollectionChanged -= FlatNodeChildrenChanged;
+        foreach (var child in node.Children)
+        {
+            UnsubscribeFlatNode(child);
+        }
+    }
+
+    private void RebuildFlatNodes()
+    {
+        FlatNodes.Clear();
+        foreach (var root in Roots)
+        {
+            AppendVisible(root);
+        }
+    }
+
+    private void AppendVisible(ScanNode node)
+    {
+        FlatNodes.Add(node);
+        if (!node.IsExpanded)
+        {
+            return;
+        }
+
+        foreach (var child in node.Children)
+        {
+            AppendVisible(child);
+        }
     }
 
     private void QueueChartRefresh()
