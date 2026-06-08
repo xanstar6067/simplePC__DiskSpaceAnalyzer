@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Diagnostics;
 using DiskSpaceAnalyzer.Models;
 
 namespace DiskSpaceAnalyzer.Services;
@@ -207,9 +208,9 @@ public sealed class AnalysisCacheService
         return results;
     }
 
-    public void StoreSnapshot(ScanNode node, bool analyzeSizeOnDisk)
+    internal SnapshotWriter? BeginSnapshot(string path, bool analyzeSizeOnDisk)
     {
-        var normalized = PathRiskClassifier.Normalize(node.FullPath);
+        var normalized = PathRiskClassifier.Normalize(path);
         var cacheHash = GetCacheHash(normalized);
         var generation = Guid.NewGuid().ToString("N");
         var dataFileName = $"analysis-cache-v{CurrentFormatVersion}-{cacheHash}-{generation}.nodes.jsonl";
@@ -217,45 +218,26 @@ public sealed class AnalysisCacheService
         var dataPath = Path.Combine(_cacheDirectory, dataFileName);
         var indexPath = Path.Combine(_cacheDirectory, indexFileName);
         var manifestPath = GetManifestPath(normalized);
-        var temporaryDataPath = $"{dataPath}.tmp";
-        var temporaryIndexPath = $"{indexPath}.tmp";
-        var temporaryManifestPath = $"{manifestPath}.{generation}.tmp";
+        var temporaryDataPath = $"{dataPath}.writing";
+        var temporaryIndexPath = $"{indexPath}.writing";
+        var temporaryManifestPath = $"{manifestPath}.{generation}.writing";
         var previousManifest = TryReadManifest(manifestPath);
 
         try
         {
-            var indexEntries = WriteDataFile(temporaryDataPath, node);
-            WriteIndexFile(temporaryIndexPath, indexEntries);
-
-            File.Move(temporaryDataPath, dataPath);
-            File.Move(temporaryIndexPath, indexPath);
-
-            var manifest = new CachedSnapshotManifest
-            {
-                FormatVersion = CurrentFormatVersion,
-                Path = normalized,
-                CachedAt = DateTimeOffset.UtcNow,
-                AnalyzeSizeOnDisk = analyzeSizeOnDisk,
-                Metadata = ReadMetadata(node.FullPath),
-                DataFileName = dataFileName,
-                IndexFileName = indexFileName,
-                Root = FromNode(node)
-            };
-
-            using (var stream = new FileStream(
-                       temporaryManifestPath,
-                       FileMode.CreateNew,
-                       FileAccess.Write,
-                       FileShare.None,
-                       StreamBufferSize,
-                       FileOptions.SequentialScan))
-            {
-                JsonSerializer.Serialize(stream, manifest, _jsonOptions);
-                stream.Flush(flushToDisk: true);
-            }
-
-            File.Move(temporaryManifestPath, manifestPath, overwrite: true);
-            DeleteManifestFiles(previousManifest, dataFileName, indexFileName);
+            return new SnapshotWriter(
+                this,
+                normalized,
+                analyzeSizeOnDisk,
+                dataFileName,
+                indexFileName,
+                dataPath,
+                indexPath,
+                manifestPath,
+                temporaryDataPath,
+                temporaryIndexPath,
+                temporaryManifestPath,
+                previousManifest);
         }
         catch
         {
@@ -264,7 +246,7 @@ public sealed class AnalysisCacheService
             TryDelete(temporaryManifestPath);
             TryDelete(dataPath);
             TryDelete(indexPath);
-            // Cache failures should not affect scanning.
+            return null;
         }
     }
 
@@ -280,49 +262,6 @@ public sealed class AnalysisCacheService
         catch
         {
             // Cache failures should not affect the app.
-        }
-    }
-
-    private List<DirectoryIndexEntry> WriteDataFile(string path, ScanNode root)
-    {
-        var indexEntries = new List<DirectoryIndexEntry>();
-        using var stream = new FileStream(
-            path,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            StreamBufferSize,
-            FileOptions.SequentialScan);
-
-        WriteDirectoryBlocks(stream, root, indexEntries);
-        stream.Flush(flushToDisk: true);
-        return indexEntries;
-    }
-
-    private void WriteDirectoryBlocks(
-        Stream stream,
-        ScanNode directory,
-        List<DirectoryIndexEntry> indexEntries)
-    {
-        if (directory.Kind != FileSystemItemKind.Folder || directory.ExistingChildren.Count == 0)
-        {
-            return;
-        }
-
-        var offset = stream.Position;
-        foreach (var child in directory.ExistingChildren)
-        {
-            WriteJsonLine(stream, FromNode(child));
-        }
-
-        indexEntries.Add(new DirectoryIndexEntry(
-            HashPath(directory.FullPath),
-            offset,
-            directory.ExistingChildren.Count));
-
-        foreach (var child in directory.ExistingChildren)
-        {
-            WriteDirectoryBlocks(stream, child, indexEntries);
         }
     }
 
@@ -578,7 +517,7 @@ public sealed class AnalysisCacheService
             SizeOnDisk = node.SizeOnDisk,
             FileCount = node.FileCount,
             DirectoryCount = node.DirectoryCount,
-            ChildCount = node.ExistingChildren.Count,
+            ChildCount = node.ChildCount,
             ModifiedAt = node.ModifiedAt,
             FileId = node.FileId
         };
@@ -625,9 +564,188 @@ public sealed class AnalysisCacheService
         }
     }
 
+    internal sealed class SnapshotWriter : IDisposable
+    {
+        private readonly AnalysisCacheService _owner;
+        private readonly string _normalizedPath;
+        private readonly bool _analyzeSizeOnDisk;
+        private readonly string _dataFileName;
+        private readonly string _indexFileName;
+        private readonly string _dataPath;
+        private readonly string _indexPath;
+        private readonly string _manifestPath;
+        private readonly string _temporaryDataPath;
+        private readonly string _temporaryIndexPath;
+        private readonly string _temporaryManifestPath;
+        private readonly CachedSnapshotManifest? _previousManifest;
+        private readonly List<DirectoryIndexEntry> _indexEntries = [];
+        private FileStream? _dataStream;
+        private long _lastFlushedPosition;
+        private long _lastFlushTimestamp = Stopwatch.GetTimestamp();
+        private bool _failed;
+        private bool _completed;
+
+        internal SnapshotWriter(
+            AnalysisCacheService owner,
+            string normalizedPath,
+            bool analyzeSizeOnDisk,
+            string dataFileName,
+            string indexFileName,
+            string dataPath,
+            string indexPath,
+            string manifestPath,
+            string temporaryDataPath,
+            string temporaryIndexPath,
+            string temporaryManifestPath,
+            CachedSnapshotManifest? previousManifest)
+        {
+            _owner = owner;
+            _normalizedPath = normalizedPath;
+            _analyzeSizeOnDisk = analyzeSizeOnDisk;
+            _dataFileName = dataFileName;
+            _indexFileName = indexFileName;
+            _dataPath = dataPath;
+            _indexPath = indexPath;
+            _manifestPath = manifestPath;
+            _temporaryDataPath = temporaryDataPath;
+            _temporaryIndexPath = temporaryIndexPath;
+            _temporaryManifestPath = temporaryManifestPath;
+            _previousManifest = previousManifest;
+            _dataStream = new FileStream(
+                temporaryDataPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.Read,
+                StreamBufferSize,
+                FileOptions.SequentialScan);
+        }
+
+        public void WriteDirectory(ScanNode directory)
+        {
+            if (_failed || _completed || directory.ChildCount == 0 || _dataStream is null)
+            {
+                return;
+            }
+
+            try
+            {
+                var offset = _dataStream.Position;
+                foreach (var child in directory.ExistingChildren)
+                {
+                    _owner.WriteJsonLine(_dataStream, FromNode(child));
+                }
+
+                _indexEntries.Add(new DirectoryIndexEntry(
+                    HashPath(directory.FullPath),
+                    offset,
+                    directory.ChildCount));
+
+                var bytesSinceFlush = _dataStream.Position - _lastFlushedPosition;
+                if (bytesSinceFlush >= 1024 * 1024 ||
+                    Stopwatch.GetElapsedTime(_lastFlushTimestamp) >= TimeSpan.FromMilliseconds(500))
+                {
+                    // Keep the growing cache visible without forcing a write for every tiny folder.
+                    _dataStream.Flush();
+                    _lastFlushedPosition = _dataStream.Position;
+                    _lastFlushTimestamp = Stopwatch.GetTimestamp();
+                }
+            }
+            catch
+            {
+                Fail();
+            }
+        }
+
+        public bool Commit(ScanNode root)
+        {
+            if (_failed || _completed || _dataStream is null)
+            {
+                return false;
+            }
+
+            try
+            {
+                _dataStream.Flush(flushToDisk: true);
+                _dataStream.Dispose();
+                _dataStream = null;
+
+                _owner.WriteIndexFile(_temporaryIndexPath, _indexEntries);
+                File.Move(_temporaryDataPath, _dataPath);
+                File.Move(_temporaryIndexPath, _indexPath);
+
+                var manifest = new CachedSnapshotManifest
+                {
+                    FormatVersion = CurrentFormatVersion,
+                    Path = _normalizedPath,
+                    CachedAt = DateTimeOffset.UtcNow,
+                    AnalyzeSizeOnDisk = _analyzeSizeOnDisk,
+                    Metadata = ReadMetadata(root.FullPath),
+                    DataFileName = _dataFileName,
+                    IndexFileName = _indexFileName,
+                    Root = FromNode(root)
+                };
+
+                using (var stream = new FileStream(
+                           _temporaryManifestPath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           StreamBufferSize,
+                           FileOptions.SequentialScan))
+                {
+                    JsonSerializer.Serialize(stream, manifest, _owner._jsonOptions);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                File.Move(_temporaryManifestPath, _manifestPath, overwrite: true);
+                _completed = true;
+                _owner.DeleteManifestFiles(_previousManifest, _dataFileName, _indexFileName);
+                return true;
+            }
+            catch
+            {
+                Fail();
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (!_completed)
+            {
+                Fail();
+            }
+        }
+
+        private void Fail()
+        {
+            if (_failed)
+            {
+                return;
+            }
+
+            _failed = true;
+            try
+            {
+                _dataStream?.Dispose();
+            }
+            catch
+            {
+                // Cleanup below is best-effort.
+            }
+
+            _dataStream = null;
+            TryDelete(_temporaryDataPath);
+            TryDelete(_temporaryIndexPath);
+            TryDelete(_temporaryManifestPath);
+            TryDelete(_dataPath);
+            TryDelete(_indexPath);
+        }
+    }
+
     private readonly record struct DirectoryIndexEntry(byte[] Hash, long Offset, int ChildCount);
 
-    private sealed class CachedSnapshotManifest
+    internal sealed class CachedSnapshotManifest
     {
         public int FormatVersion { get; set; }
 
@@ -646,7 +764,7 @@ public sealed class AnalysisCacheService
         public CachedNodeRecord Root { get; set; } = new();
     }
 
-    private sealed class CachedMetadata
+    internal sealed class CachedMetadata
     {
         public bool Exists { get; set; }
 
@@ -660,7 +778,7 @@ public sealed class AnalysisCacheService
         public string FileId { get; set; } = string.Empty;
     }
 
-    private sealed class CachedNodeRecord
+    internal sealed class CachedNodeRecord
     {
         public string FullPath { get; set; } = string.Empty;
 

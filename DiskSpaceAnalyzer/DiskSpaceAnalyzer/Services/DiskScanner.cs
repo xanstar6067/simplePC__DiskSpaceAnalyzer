@@ -39,14 +39,24 @@ public sealed class DiskScanner
                 return cached;
             }
 
+            using var cacheWriter = _cache.BeginSnapshot(normalized, options.AnalyzeSizeOnDisk);
             var counters = new ScanCounters();
             var activeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var root = ScanEntry(normalized, fileSystemInfo: null, options, counters, progress, cancellationToken, isRootChild: true, activeDirectories);
+            var root = ScanEntry(
+                normalized,
+                fileSystemInfo: null,
+                options,
+                counters,
+                progress,
+                cancellationToken,
+                isRootChild: true,
+                activeDirectories,
+                cacheWriter);
             root.IsExpanded = true;
 
             if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
             {
-                _cache.StoreSnapshot(root, options.AnalyzeSizeOnDisk);
+                cacheWriter?.Commit(root);
             }
 
             return root;
@@ -61,7 +71,8 @@ public sealed class DiskScanner
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
         bool isRootChild,
-        HashSet<string> activeDirectories)
+        HashSet<string> activeDirectories,
+        AnalysisCacheService.SnapshotWriter? cacheWriter)
     {
         counters.CurrentPath = path;
         ReportProgress(counters, progress);
@@ -84,7 +95,7 @@ public sealed class DiskScanner
 
             if (attributes.HasFlag(FileAttributes.Directory))
             {
-                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild, activeDirectories);
+                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild, activeDirectories, cacheWriter);
             }
 
             return ScanFile(path, fileSystemInfo, options, counters);
@@ -116,7 +127,8 @@ public sealed class DiskScanner
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
         bool isRootChild,
-        HashSet<string> activeDirectories)
+        HashSet<string> activeDirectories,
+        AnalysisCacheService.SnapshotWriter? cacheWriter)
     {
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
         var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
@@ -139,7 +151,7 @@ public sealed class DiskScanner
 
         try
         {
-            return ScanDirectoryContents(node, path, options, counters, progress, cancellationToken, isRootChild, activeDirectories);
+            return ScanDirectoryContents(node, path, options, counters, progress, cancellationToken, isRootChild, activeDirectories, cacheWriter);
         }
         finally
         {
@@ -155,7 +167,8 @@ public sealed class DiskScanner
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
         bool isRootChild,
-        HashSet<string> activeDirectories)
+        HashSet<string> activeDirectories,
+        AnalysisCacheService.SnapshotWriter? cacheWriter)
     {
         counters.Directories++;
         node.StatusText = options.IncludeSystemDirectories || !_classifier.IsWindowsRoot(path)
@@ -169,6 +182,7 @@ public sealed class DiskScanner
         }
         catch (UnauthorizedAccessException)
         {
+            cacheWriter?.WriteDirectory(node);
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
             node.StatusText = "Нет доступа";
@@ -179,6 +193,7 @@ public sealed class DiskScanner
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
             node.StatusText = ex.Message;
+            cacheWriter?.WriteDirectory(node);
             return node;
         }
 
@@ -193,7 +208,7 @@ public sealed class DiskScanner
                     break;
                 }
 
-                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false, activeDirectories);
+                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false, activeDirectories, cacheWriter);
                 node.AddChild(child);
                 Accumulate(node, child);
 
@@ -215,6 +230,7 @@ public sealed class DiskScanner
         {
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
+            cacheWriter?.WriteDirectory(node);
             node.StatusText = "Нет доступа";
             return node;
         }
@@ -223,10 +239,15 @@ public sealed class DiskScanner
             node.Kind = FileSystemItemKind.NoAccess;
             node.Risk = RiskLevel.NoAccess;
             node.StatusText = ex.Message;
+            cacheWriter?.WriteDirectory(node);
             return node;
         }
 
         node.SortChildrenBySize();
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            cacheWriter?.WriteDirectory(node);
+        }
         if (!cancellationToken.IsCancellationRequested)
         {
             node.StatusText = "Готово";
