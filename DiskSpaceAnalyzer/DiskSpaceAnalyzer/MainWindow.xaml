@@ -473,7 +473,6 @@
                                 <GridViewColumn Header="Тип" Width="82" DisplayMemberBinding="{Binding KindText}" />
                                 <GridViewColumn Header="Размер" Width="94" DisplayMemberBinding="{Binding LogicalSizeText}" />
                                 <GridViewColumn Header="Доля" Width="68" DisplayMemberBinding="{Binding PercentOfParentText}" />
-                                <GridViewColumn Header="Статус" Width="128" DisplayMemberBinding="{Binding RiskText}" />
                             </GridView>
                         </ListView.View>
                     </ListView>

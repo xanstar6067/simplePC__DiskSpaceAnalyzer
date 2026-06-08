@@ -177,7 +177,13 @@ public sealed class DonutChart : FrameworkElement
 
     private void ShowSliceToolTip(ScanNode node)
     {
-        _sliceToolTip.Content = $"{node.DisplayName}{Environment.NewLine}{node.SizeOnDiskText}";
+        var total = GetNodes().Sum(item => Math.Max(0, item.SizeOnDisk));
+        var percentText = total > 0
+            ? $"{node.SizeOnDisk / (double)total:P1}"
+            : "";
+
+        _sliceToolTip.Content =
+            $"{node.DisplayName}{Environment.NewLine}{node.SizeOnDiskText}{Environment.NewLine}{percentText}";
         _sliceToolTip.IsOpen = true;
     }
 
