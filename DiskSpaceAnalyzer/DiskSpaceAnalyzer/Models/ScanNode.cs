@@ -127,13 +127,13 @@ public sealed class ScanNode : ViewModelBase
 
     public string RiskText => Risk switch
     {
-        RiskLevel.Safe => "Безопасно",
-        RiskLevel.Review => "Проверить",
+        RiskLevel.Safe => "Доступно",
+        RiskLevel.Review => "Требует внимания",
         RiskLevel.System => "Системное",
-        RiskLevel.Dangerous => "Опасно",
+        RiskLevel.Dangerous => "Ограничено",
         RiskLevel.Skipped => "Пропущено",
         RiskLevel.NoAccess => "Нет доступа",
-        _ => "Безопасно"
+        _ => "Доступно"
     };
 
     public Brush RiskBrush => Risk switch

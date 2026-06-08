@@ -59,10 +59,10 @@
                     <TextBlock Grid.Row="4" Text="Папок внутри" Style="{StaticResource DetailsLabel}" />
                     <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding DirectoryCount}" Style="{StaticResource DetailsValue}" />
 
-                    <TextBlock Grid.Row="5" Text="Риск" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="5" Text="Статус" Style="{StaticResource DetailsLabel}" />
                     <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding RiskText}" Foreground="{Binding RiskBrush}" Style="{StaticResource DetailsValue}" />
 
-                    <TextBlock Grid.Row="6" Text="Статус" Style="{StaticResource DetailsLabel}" />
+                    <TextBlock Grid.Row="6" Text="Обработка" Style="{StaticResource DetailsLabel}" />
                     <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding StatusText}" Style="{StaticResource DetailsValue}" />
 
                     <TextBlock Grid.Row="7" Text="ID файла" Style="{StaticResource DetailsLabel}" />

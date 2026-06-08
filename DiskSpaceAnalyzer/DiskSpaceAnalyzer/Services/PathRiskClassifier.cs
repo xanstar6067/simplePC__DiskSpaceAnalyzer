@@ -60,7 +60,7 @@ public sealed class PathRiskClassifier
 
             if (underSkippedRoot && !underAllowedWindowsChild && !IsWindowsRoot(normalized))
             {
-                return new PathDecision(true, RiskLevel.Skipped, "Пропущено безопасным режимом");
+                return new PathDecision(true, RiskLevel.Skipped, "Пропущено стандартным режимом");
             }
         }
 

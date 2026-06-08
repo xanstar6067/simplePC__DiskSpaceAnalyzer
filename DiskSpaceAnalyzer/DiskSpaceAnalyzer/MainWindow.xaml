@@ -105,7 +105,8 @@
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type models:ScanNode}" ItemsSource="{Binding Children}">
-            <Grid MinWidth="720" Margin="0,2">
+            <Grid Margin="0,2"
+                  Width="{Binding RelativeSource={RelativeSource AncestorType=TreeView}, Path=ActualWidth}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="100" />
@@ -151,6 +152,7 @@
         <Style TargetType="TreeViewItem">
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
             <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" />
             <Setter Property="ContextMenu">
                 <Setter.Value>
@@ -305,8 +307,8 @@
                         <TextBlock Grid.Column="1" Text="Размер" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
                         <TextBlock Grid.Column="2" Text="На диске" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
                         <TextBlock Grid.Column="3" Text="Доля" FontWeight="SemiBold" TextAlignment="Right" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="4" Text="Риск" FontWeight="SemiBold" Margin="12,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
-                        <TextBlock Grid.Column="5" Text="Статус" FontWeight="SemiBold" Margin="10,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
+                        <TextBlock Grid.Column="4" Text="Статус" FontWeight="SemiBold" Margin="12,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
+                        <TextBlock Grid.Column="5" Text="Обработка" FontWeight="SemiBold" Margin="10,0,0,0" Foreground="{StaticResource MutedTextBrush}" />
                     </Grid>
 
                     <TreeView x:Name="ResultsTree"
@@ -314,6 +316,7 @@
                               ItemsSource="{Binding Roots}"
                               SelectedItemChanged="ResultsTree_SelectedItemChanged"
                               BorderThickness="0"
+                              HorizontalContentAlignment="Stretch"
                               VirtualizingPanel.IsVirtualizing="True"
                               VirtualizingPanel.VirtualizationMode="Recycling"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
@@ -403,7 +406,7 @@
                                 <GridViewColumn Header="Крупные элементы" Width="190" DisplayMemberBinding="{Binding DisplayName}" />
                                 <GridViewColumn Header="Тип" Width="82" DisplayMemberBinding="{Binding KindText}" />
                                 <GridViewColumn Header="На диске" Width="94" DisplayMemberBinding="{Binding SizeOnDiskText}" />
-                                <GridViewColumn Header="Риск" Width="74" DisplayMemberBinding="{Binding RiskText}" />
+                                <GridViewColumn Header="Статус" Width="128" DisplayMemberBinding="{Binding RiskText}" />
                             </GridView>
                         </ListView.View>
                     </ListView>
