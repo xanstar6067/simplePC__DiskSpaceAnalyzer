@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media;
 using DiskSpaceAnalyzer.Services;
@@ -15,7 +16,9 @@ public sealed class ScanNode : ViewModelBase
 {
     private static readonly IReadOnlyList<ScanNode> EmptyChildren = Array.Empty<ScanNode>();
 
-    private ObservableCollection<ScanNode>? _children;
+    private ScanNodeCollection? _children;
+    private int _cachedChildCount;
+    private bool _areChildrenLoaded = true;
     private long _logicalSize;
     private long _sizeOnDisk;
     private long _fileCount;
@@ -31,19 +34,28 @@ public sealed class ScanNode : ViewModelBase
         {
             if (_children is null)
             {
-                _children = [];
-                _children.CollectionChanged += ChildrenChanged;
+                _children = CreateChildrenCollection();
             }
 
             return _children;
         }
     }
 
-    public int ChildCount => _children?.Count ?? 0;
+    public int ChildCount => _areChildrenLoaded ? _children?.Count ?? 0 : _cachedChildCount;
 
     internal IReadOnlyList<ScanNode> ExistingChildren => _children is null ? EmptyChildren : _children;
 
     internal ObservableCollection<ScanNode>? CreatedChildren => _children;
+
+    internal bool HasUnloadedCachedChildren => IsCacheBacked && !_areChildrenLoaded && _cachedChildCount > 0;
+
+    internal bool IsCacheBacked => !string.IsNullOrWhiteSpace(CacheDataPath);
+
+    internal string? CacheDataPath { get; private set; }
+
+    internal string? CacheIndexPath { get; private set; }
+
+    internal int CacheFormatVersion { get; private set; }
 
     public ScanNode? Parent { get; set; }
 
@@ -222,5 +234,65 @@ public sealed class ScanNode : ViewModelBase
     private void ChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         OnPropertyChanged(nameof(ChildCount));
+    }
+
+    internal void SetCachedSource(string dataPath, string? indexPath, int formatVersion, int childCount)
+    {
+        CacheDataPath = dataPath;
+        CacheIndexPath = indexPath;
+        CacheFormatVersion = formatVersion;
+        _cachedChildCount = Math.Max(0, childCount);
+        _areChildrenLoaded = _cachedChildCount == 0;
+        OnPropertyChanged(nameof(ChildCount));
+    }
+
+    internal void SetCachedChildren(IReadOnlyList<ScanNode> children)
+    {
+        foreach (var child in children)
+        {
+            child.Parent = this;
+        }
+
+        _children ??= CreateChildrenCollection();
+        _cachedChildCount = children.Count;
+        _areChildrenLoaded = true;
+        _children.ReplaceAll(children);
+        OnPropertyChanged(nameof(ChildCount));
+    }
+
+    internal bool UnloadCachedChildren()
+    {
+        if (!IsCacheBacked || !_areChildrenLoaded || _cachedChildCount == 0)
+        {
+            return false;
+        }
+
+        _areChildrenLoaded = false;
+        _children?.ReplaceAll(EmptyChildren);
+        OnPropertyChanged(nameof(ChildCount));
+        return true;
+    }
+
+    private ScanNodeCollection CreateChildrenCollection()
+    {
+        var children = new ScanNodeCollection();
+        children.CollectionChanged += ChildrenChanged;
+        return children;
+    }
+
+    private sealed class ScanNodeCollection : ObservableCollection<ScanNode>
+    {
+        public void ReplaceAll(IReadOnlyList<ScanNode> nodes)
+        {
+            Items.Clear();
+            foreach (var node in nodes)
+            {
+                Items.Add(node);
+            }
+
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
     }
 }

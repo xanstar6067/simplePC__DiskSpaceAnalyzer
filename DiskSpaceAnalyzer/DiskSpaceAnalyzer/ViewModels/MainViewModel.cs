@@ -22,6 +22,7 @@ public sealed class MainViewModel : ViewModelBase
     private readonly DispatcherTimer _driveRefreshTimer;
     private DiskScanner _scanner;
     private CancellationTokenSource? _scanCancellation;
+    private CancellationTokenSource? _searchCancellation;
     private INotifyCollectionChanged? _selectedChildren;
     private readonly HashSet<ScanNode> _subscribedFlatNodes = [];
     private DriveSummary? _selectedDrive;
@@ -142,6 +143,11 @@ public sealed class MainViewModel : ViewModelBase
             if (_selectedChildren is not null)
             {
                 _selectedChildren.CollectionChanged -= SelectedChildrenChanged;
+            }
+
+            if (value is not null)
+            {
+                EnsureCachedChildrenLoaded(value);
             }
 
             _selectedNode = value;
@@ -367,7 +373,7 @@ public sealed class MainViewModel : ViewModelBase
 
     private bool TryShowCachedScan(string path)
     {
-        if (IgnoreCache || !_cache.TryRestoreSnapshot(path, AnalyzeSizeOnDisk, out var cached) || cached is null)
+        if (!_cache.TryRestoreSnapshot(path, AnalyzeSizeOnDisk, out var cached) || cached is null)
         {
             return false;
         }
@@ -733,6 +739,15 @@ public sealed class MainViewModel : ViewModelBase
     {
         if (e.PropertyName == nameof(ScanNode.IsExpanded))
         {
+            if (sender is ScanNode { IsExpanded: true } node)
+            {
+                EnsureCachedChildrenLoaded(node);
+            }
+            else if (sender is ScanNode collapsedNode)
+            {
+                ReleaseCachedChildren(collapsedNode);
+            }
+
             RebuildFlatNodes();
         }
     }
@@ -910,12 +925,52 @@ public sealed class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(SelectedNodeSafetyText));
     }
 
-    private void RebuildSearchResults()
+    private async void RebuildSearchResults()
     {
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        _searchCancellation = null;
         SearchResults.Clear();
+
         var query = SearchQuery.Trim();
         if (query.Length < 2)
         {
+            return;
+        }
+
+        var cachedRoot = Roots.Count == 1 && Roots[0].IsCacheBacked ? Roots[0] : null;
+        if (cachedRoot is not null)
+        {
+            var cancellation = new CancellationTokenSource();
+            _searchCancellation = cancellation;
+
+            try
+            {
+                await Task.Delay(150, cancellation.Token);
+                var matches = await Task.Run(
+                    () => _cache.SearchSnapshot(cachedRoot, query, 500, cancellation.Token),
+                    cancellation.Token);
+
+                cancellation.Token.ThrowIfCancellationRequested();
+                foreach (var node in matches)
+                {
+                    SearchResults.Add(node);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // A newer query replaced this search.
+            }
+            finally
+            {
+                if (ReferenceEquals(_searchCancellation, cancellation))
+                {
+                    _searchCancellation = null;
+                }
+
+                cancellation.Dispose();
+            }
+
             return;
         }
 
@@ -965,6 +1020,9 @@ public sealed class MainViewModel : ViewModelBase
 
     private void ClearAnalysisNodes()
     {
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        _searchCancellation = null;
         SelectedNode = null;
         SelectedChartNode = null;
         _navigationHistory.Clear();
@@ -972,6 +1030,55 @@ public sealed class MainViewModel : ViewModelBase
         Roots.Clear();
         SearchResults.Clear();
         ClearChartChildren();
+    }
+
+    private bool EnsureCachedChildrenLoaded(ScanNode node)
+    {
+        if (!node.HasUnloadedCachedChildren)
+        {
+            return true;
+        }
+
+        if (_cache.TryLoadChildren(node))
+        {
+            return true;
+        }
+
+        StatusSummary = $"Не удалось загрузить папку из кеша: {node.FullPath}";
+        return false;
+    }
+
+    private void ReleaseCachedChildren(ScanNode node)
+    {
+        if (!node.IsCacheBacked)
+        {
+            return;
+        }
+
+        if (SelectedNode is not null &&
+            SelectedNode != node &&
+            IsDescendantOf(SelectedNode, node))
+        {
+            SelectedNode = node;
+        }
+
+        _navigationHistory.Clear();
+        NavigateBackCommand.RaiseCanExecuteChanged();
+        SelectedChartNode = null;
+        node.UnloadCachedChildren();
+    }
+
+    private static bool IsDescendantOf(ScanNode node, ScanNode ancestor)
+    {
+        for (var parent = node.Parent; parent is not null; parent = parent.Parent)
+        {
+            if (parent == ancestor)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ConfirmFullSystemScan()
