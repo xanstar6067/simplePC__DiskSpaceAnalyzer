@@ -303,7 +303,6 @@
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
-                                <Setter Property="Background" Value="Transparent" />
                                 <Setter Property="BorderBrush" Value="Transparent" />
                                 <Setter Property="BorderThickness" Value="1" />
                                 <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" />
@@ -331,13 +330,6 @@
                                     </Setter.Value>
                                 </Setter>
                                 <Style.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="#EEF3F8" />
-                                    </Trigger>
-                                    <Trigger Property="IsSelected" Value="True">
-                                        <Setter Property="Background" Value="#D6E9FF" />
-                                        <Setter Property="BorderBrush" Value="#6AA9E9" />
-                                    </Trigger>
                                     <DataTrigger Binding="{Binding IsRefreshing}" Value="True">
                                         <Setter Property="Background" Value="#FFF0C7" />
                                         <Setter Property="BorderBrush" Value="#D99A24" />

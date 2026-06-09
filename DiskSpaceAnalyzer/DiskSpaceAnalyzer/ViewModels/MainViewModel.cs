@@ -904,7 +904,12 @@ public sealed class MainViewModel : ViewModelBase
     private void FlatNodeChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         UpdateFlatNodeSubscriptions(e);
-        RebuildFlatNodes();
+        if (_subscribedFlatNodes.Any(node =>
+                node.IsExpanded &&
+                ReferenceEquals(node.CreatedChildren, sender)))
+        {
+            RebuildFlatNodes();
+        }
     }
 
     private void FlatNodePropertyChanged(object? sender, PropertyChangedEventArgs e)
