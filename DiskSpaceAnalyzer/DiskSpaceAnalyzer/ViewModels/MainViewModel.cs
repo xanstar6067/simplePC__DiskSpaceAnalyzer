@@ -621,6 +621,7 @@ public sealed class MainViewModel : ViewModelBase
         };
         SetDisplayedSizeCalculationMode(options.SizeCalculationMode);
 
+        node.IsRefreshing = true;
         IsScanning = true;
         ResetProgress();
         CacheWarningText = "";
@@ -644,6 +645,7 @@ public sealed class MainViewModel : ViewModelBase
         }
         finally
         {
+            node.IsRefreshing = false;
             CurrentPath = "";
             IsScanning = false;
             _scanCancellation?.Dispose();

@@ -27,6 +27,7 @@ public sealed class ScanNode : ViewModelBase
     private RiskLevel _risk = RiskLevel.Safe;
     private bool _isExpanded;
     private bool _isSelected;
+    private bool _isRefreshing;
 
     public ObservableCollection<ScanNode> Children
     {
@@ -136,6 +137,12 @@ public sealed class ScanNode : ViewModelBase
     {
         get => _isSelected;
         set => SetProperty(ref _isSelected, value);
+    }
+
+    public bool IsRefreshing
+    {
+        get => _isRefreshing;
+        set => SetProperty(ref _isRefreshing, value);
     }
 
     public int Level
