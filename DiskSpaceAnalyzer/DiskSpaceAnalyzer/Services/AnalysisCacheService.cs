@@ -1,31 +1,21 @@
+using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Diagnostics;
 using DiskSpaceAnalyzer.Models;
+using Microsoft.Data.Sqlite;
 
 namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
-    private const int CurrentFormatVersion = 5;
-    private const int StreamBufferSize = 64 * 1024;
-    private const int HashLength = 32;
-    private const int IndexHeaderSize = 16;
-    private const int IndexRecordSize = HashLength + sizeof(long) + sizeof(int);
-
-    private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("DSAIDX3\0");
+    private const int CurrentFormatVersion = 6;
+    private const int CacheSizeKiB = 4096;
 
     private readonly string _cacheDirectory;
-    private readonly JsonSerializerOptions _jsonOptions = new()
+
+    static AnalysisCacheService()
     {
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
+        SQLitePCL.Batteries.Init();
+    }
 
     public AnalysisCacheService()
         : this(Path.Combine(
@@ -43,36 +33,57 @@ public sealed class AnalysisCacheService
     public bool TryRestoreSnapshot(string path, SizeCalculationMode sizeCalculationMode, out ScanNode? node)
     {
         node = null;
-
         var normalized = PathRiskClassifier.Normalize(path);
-        var manifestPath = GetManifestPath(normalized);
-        var manifest = TryReadManifest(manifestPath);
-        if (manifest is null ||
-            manifest.FormatVersion != CurrentFormatVersion ||
-            !string.Equals(manifest.Path, normalized, StringComparison.OrdinalIgnoreCase) ||
-            manifest.SizeCalculationMode != sizeCalculationMode ||
-            !MatchesCurrentMetadata(manifest.Path, manifest.Metadata))
-        {
-            return false;
-        }
-
-        var dataPath = ResolveCacheFile(manifest.DataFileName);
-        var indexPath = ResolveCacheFile(manifest.IndexFileName);
-        if (dataPath is null || indexPath is null || !File.Exists(dataPath) || !File.Exists(indexPath))
+        var databasePath = GetDatabasePath(normalized, sizeCalculationMode);
+        if (!File.Exists(databasePath))
         {
             return false;
         }
 
         try
         {
-            node = ToNode(manifest.Root, dataPath, indexPath);
-            if (node.HasUnloadedCachedChildren && !TryLoadChildren(node))
+            using var connection = OpenReadOnly(databasePath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT FormatVersion, Path, CachedAt, SizeCalculationMode,
+                       RootLength, RootAttributes, RootLastWriteUtcTicks, RootFileId, RootNodeId
+                FROM Snapshot
+                LIMIT 1;
+                """;
+
+            using var reader = command.ExecuteReader();
+            if (!reader.Read() ||
+                reader.GetInt32(0) != CurrentFormatVersion ||
+                !string.Equals(reader.GetString(1), normalized, StringComparison.OrdinalIgnoreCase) ||
+                reader.GetInt32(3) != (int)sizeCalculationMode)
             {
-                node = null;
                 return false;
             }
 
-            node.StatusText = $"Из кеша: {manifest.CachedAt.LocalDateTime:g}";
+            var metadata = new CachedMetadata(
+                reader.GetInt64(4),
+                (FileAttributes)reader.GetInt64(5),
+                reader.GetInt64(6),
+                reader.GetString(7));
+            if (!MatchesCurrentMetadata(normalized, metadata))
+            {
+                return false;
+            }
+
+            var rootId = reader.GetInt64(8);
+            reader.Close();
+            node = ReadNode(connection, databasePath, rootId);
+            if (node is null)
+            {
+                return false;
+            }
+
+            var cachedAt = DateTimeOffset.Parse(
+                ExecuteScalarString(connection, "SELECT CachedAt FROM Snapshot LIMIT 1;"),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind);
+            node.StatusText = $"Из кэша: {cachedAt.LocalDateTime:g}";
             return true;
         }
         catch
@@ -89,48 +100,37 @@ public sealed class AnalysisCacheService
             return true;
         }
 
-        if (node.CacheFormatVersion != CurrentFormatVersion ||
-            string.IsNullOrWhiteSpace(node.CacheDataPath) ||
-            string.IsNullOrWhiteSpace(node.CacheIndexPath) ||
-            !TryFindDirectory(node.CacheIndexPath, node.FullPath, out var entry))
+        if (string.IsNullOrWhiteSpace(node.CacheDatabasePath) ||
+            node.CacheNodeId <= 0 ||
+            !File.Exists(node.CacheDatabasePath))
         {
             return false;
         }
 
         try
         {
-            using var stream = new FileStream(
-                node.CacheDataPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                StreamBufferSize,
-                FileOptions.RandomAccess);
-            stream.Seek(entry.Offset, SeekOrigin.Begin);
+            using var connection = OpenReadOnly(node.CacheDatabasePath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT Id, FullPath, Name, Kind, Risk, StatusText, LogicalSize, SizeOnDisk,
+                       FileCount, DirectoryCount, ChildCount, ModifiedAt, FileId
+                FROM Nodes
+                WHERE ParentId = $parentId
+                ORDER BY SizeOnDisk DESC, Name COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$parentId", node.CacheNodeId);
 
-            using var reader = new StreamReader(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: false,
-                StreamBufferSize,
-                leaveOpen: false);
-
-            var children = new List<ScanNode>(entry.ChildCount);
-            for (var i = 0; i < entry.ChildCount; i++)
+            var children = new List<ScanNode>(node.ChildCount);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
             {
-                var line = reader.ReadLine();
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    return false;
-                }
+                children.Add(ToNode(reader, node.CacheDatabasePath));
+            }
 
-                var record = JsonSerializer.Deserialize<CachedNodeRecord>(line, _jsonOptions);
-                if (record is null)
-                {
-                    return false;
-                }
-
-                children.Add(ToNode(record, node.CacheDataPath, node.CacheIndexPath));
+            if (children.Count != node.ChildCount)
+            {
+                return false;
             }
 
             node.SetCachedChildren(children);
@@ -150,50 +150,37 @@ public sealed class AnalysisCacheService
     {
         var results = new List<ScanNode>(Math.Min(maxResults, 500));
         if (!cachedRoot.IsCacheBacked ||
-            string.IsNullOrWhiteSpace(cachedRoot.CacheDataPath) ||
-            string.IsNullOrWhiteSpace(cachedRoot.CacheIndexPath) ||
+            string.IsNullOrWhiteSpace(cachedRoot.CacheDatabasePath) ||
             string.IsNullOrWhiteSpace(query) ||
             maxResults <= 0)
         {
             return results;
         }
 
-        if (MatchesQuery(cachedRoot.Name, cachedRoot.FullPath, query))
-        {
-            results.Add(cachedRoot);
-        }
-
         try
         {
-            using var stream = new FileStream(
-                cachedRoot.CacheDataPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                StreamBufferSize,
-                FileOptions.SequentialScan);
-            using var reader = new StreamReader(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: false,
-                StreamBufferSize);
+            using var connection = OpenReadOnly(cachedRoot.CacheDatabasePath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT Id, FullPath, Name, Kind, Risk, StatusText, LogicalSize, SizeOnDisk,
+                       FileCount, DirectoryCount, ChildCount, ModifiedAt, FileId
+                FROM Nodes;
+                """;
 
-            var canUseRawPrefilter = query.IndexOfAny(['\\', '"', '\r', '\n', '\t']) < 0;
-            while (results.Count < maxResults && reader.ReadLine() is { } line)
+            using var reader = command.ExecuteReader();
+            while (results.Count < maxResults && reader.Read())
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (canUseRawPrefilter && !line.Contains(query, StringComparison.OrdinalIgnoreCase))
+                var fullPath = reader.GetString(1);
+                var name = reader.GetString(2);
+                if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                    !fullPath.Contains(query, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                var record = JsonSerializer.Deserialize<CachedNodeRecord>(line, _jsonOptions);
-                if (record is null || !MatchesQuery(record.Name, record.FullPath, query))
-                {
-                    continue;
-                }
-
-                results.Add(ToNode(record, cachedRoot.CacheDataPath, cachedRoot.CacheIndexPath));
+                results.Add(ToNode(reader, cachedRoot.CacheDatabasePath));
             }
         }
         catch (OperationCanceledException)
@@ -202,55 +189,19 @@ public sealed class AnalysisCacheService
         }
         catch
         {
-            // A damaged cache should behave like an incomplete search, not crash the app.
+            // A damaged cache behaves like an incomplete search.
         }
 
         return results;
     }
 
-    internal SnapshotWriter? BeginSnapshot(string path, SizeCalculationMode sizeCalculationMode)
+    internal SnapshotWriter BeginSnapshot(string path, SizeCalculationMode sizeCalculationMode)
     {
-        var normalized = PathRiskClassifier.Normalize(path);
-        var cacheHash = GetCacheHash(normalized);
-        var generation = Guid.NewGuid().ToString("N");
-        var dataFileName = $"analysis-cache-v{CurrentFormatVersion}-{cacheHash}-{generation}.nodes.jsonl";
-        var indexFileName = $"analysis-cache-v{CurrentFormatVersion}-{cacheHash}-{generation}.index.bin";
-        var dataPath = Path.Combine(_cacheDirectory, dataFileName);
-        var indexPath = Path.Combine(_cacheDirectory, indexFileName);
-        var manifestPath = GetManifestPath(normalized);
-        var temporaryDataPath = $"{dataPath}.writing";
-        var temporaryIndexPath = $"{indexPath}.writing";
-        var temporaryManifestPath = $"{manifestPath}.{generation}.writing";
-        var backupManifestPath = $"{manifestPath}.{generation}.backup";
-        var previousManifest = TryReadManifest(manifestPath);
-
-        try
-        {
-            return new SnapshotWriter(
-                this,
-                normalized,
-                sizeCalculationMode,
-                dataFileName,
-                indexFileName,
-                dataPath,
-                indexPath,
-                manifestPath,
-                temporaryDataPath,
-                temporaryIndexPath,
-                temporaryManifestPath,
-                backupManifestPath,
-                previousManifest);
-        }
-        catch
-        {
-            TryDelete(temporaryDataPath);
-            TryDelete(temporaryIndexPath);
-            TryDelete(temporaryManifestPath);
-            TryDelete(backupManifestPath);
-            TryDelete(dataPath);
-            TryDelete(indexPath);
-            return null;
-        }
+        return new SnapshotWriter(
+            this,
+            PathRiskClassifier.Normalize(path),
+            sizeCalculationMode,
+            GetDatabasePath(path, sizeCalculationMode));
     }
 
     public void Clear()
@@ -268,195 +219,74 @@ public sealed class AnalysisCacheService
         }
     }
 
-    private void WriteIndexFile(string path, List<DirectoryIndexEntry> entries)
+    private string GetDatabasePath(string path, SizeCalculationMode sizeCalculationMode)
     {
-        entries.Sort(static (left, right) => CompareHashes(left.Hash, right.Hash));
-
-        using var stream = new FileStream(
-            path,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            StreamBufferSize,
-            FileOptions.SequentialScan);
-        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-
-        writer.Write(IndexMagic);
-        writer.Write(CurrentFormatVersion);
-        writer.Write(entries.Count);
-        foreach (var entry in entries)
-        {
-            writer.Write(entry.Hash);
-            writer.Write(entry.Offset);
-            writer.Write(entry.ChildCount);
-        }
-
-        writer.Flush();
-        stream.Flush(flushToDisk: true);
-    }
-
-    private static bool TryFindDirectory(string indexPath, string directoryPath, out DirectoryIndexEntry entry)
-    {
-        entry = default;
-
-        try
-        {
-            using var stream = new FileStream(
-                indexPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                StreamBufferSize,
-                FileOptions.RandomAccess);
-            using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
-
-            if (!reader.ReadBytes(IndexMagic.Length).SequenceEqual(IndexMagic) ||
-                reader.ReadInt32() != CurrentFormatVersion)
-            {
-                return false;
-            }
-
-            var entryCount = reader.ReadInt32();
-            var expectedLength = IndexHeaderSize + (long)entryCount * IndexRecordSize;
-            if (entryCount < 0 || stream.Length != expectedLength)
-            {
-                return false;
-            }
-
-            var targetHash = HashPath(directoryPath);
-            var low = 0;
-            var high = entryCount - 1;
-            while (low <= high)
-            {
-                var middle = low + ((high - low) / 2);
-                stream.Seek(IndexHeaderSize + (long)middle * IndexRecordSize, SeekOrigin.Begin);
-                var currentHash = reader.ReadBytes(HashLength);
-                if (currentHash.Length != HashLength)
-                {
-                    return false;
-                }
-
-                var comparison = CompareHashes(currentHash, targetHash);
-                if (comparison == 0)
-                {
-                    var offset = reader.ReadInt64();
-                    var childCount = reader.ReadInt32();
-                    if (offset < 0 || childCount < 0)
-                    {
-                        return false;
-                    }
-
-                    entry = new DirectoryIndexEntry(currentHash, offset, childCount);
-                    return true;
-                }
-
-                if (comparison < 0)
-                {
-                    low = middle + 1;
-                }
-                else
-                {
-                    high = middle - 1;
-                }
-            }
-        }
-        catch
-        {
-            return false;
-        }
-
-        return false;
-    }
-
-    private void WriteJsonLine<T>(Stream stream, T value)
-    {
-        JsonSerializer.Serialize(stream, value, _jsonOptions);
-        stream.WriteByte((byte)'\n');
-    }
-
-    private CachedSnapshotManifest? TryReadManifest(string manifestPath)
-    {
-        if (!File.Exists(manifestPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var stream = new FileStream(
-                manifestPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                StreamBufferSize,
-                FileOptions.SequentialScan);
-            return JsonSerializer.Deserialize<CachedSnapshotManifest>(stream, _jsonOptions);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private void DeleteManifestFiles(
-        CachedSnapshotManifest? manifest,
-        string currentDataFileName,
-        string currentIndexFileName)
-    {
-        if (manifest is null)
-        {
-            return;
-        }
-
-        if (!string.Equals(manifest.DataFileName, currentDataFileName, StringComparison.OrdinalIgnoreCase))
-        {
-            TryDelete(ResolveCacheFile(manifest.DataFileName));
-        }
-
-        if (!string.Equals(manifest.IndexFileName, currentIndexFileName, StringComparison.OrdinalIgnoreCase))
-        {
-            TryDelete(ResolveCacheFile(manifest.IndexFileName));
-        }
-    }
-
-    private string? ResolveCacheFile(string fileName)
-    {
-        if (string.IsNullOrWhiteSpace(fileName) ||
-            !string.Equals(fileName, Path.GetFileName(fileName), StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return Path.Combine(_cacheDirectory, fileName);
-    }
-
-    private string GetManifestPath(string path)
-    {
+        var normalized = PathRiskClassifier.Normalize(path);
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(normalized.ToUpperInvariant())));
         return Path.Combine(
             _cacheDirectory,
-            $"analysis-cache-v{CurrentFormatVersion}-{GetCacheHash(path)}.manifest.json");
+            $"analysis-cache-v{CurrentFormatVersion}-{hash}-{(int)sizeCalculationMode}.db");
     }
 
-    private static string GetCacheHash(string path)
+    private static SqliteConnection OpenReadOnly(string databasePath)
     {
-        return Convert.ToHexString(HashPath(path));
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA query_only=ON; PRAGMA cache_size=-{CacheSizeKiB}; PRAGMA temp_store=FILE;";
+        command.ExecuteNonQuery();
+        return connection;
     }
 
-    private static byte[] HashPath(string path)
+    private static ScanNode? ReadNode(SqliteConnection connection, string databasePath, long nodeId)
     {
-        var normalized = PathRiskClassifier.Normalize(path).ToUpperInvariant();
-        return SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Id, FullPath, Name, Kind, Risk, StatusText, LogicalSize, SizeOnDisk,
+                   FileCount, DirectoryCount, ChildCount, ModifiedAt, FileId
+            FROM Nodes
+            WHERE Id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", nodeId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ToNode(reader, databasePath) : null;
     }
 
-    private static int CompareHashes(byte[] left, byte[] right)
+    private static ScanNode ToNode(SqliteDataReader reader, string databasePath)
     {
-        return left.AsSpan().SequenceCompareTo(right);
+        var node = new ScanNode
+        {
+            FullPath = reader.GetString(1),
+            Name = reader.GetString(2),
+            Kind = (FileSystemItemKind)reader.GetInt32(3),
+            Risk = (RiskLevel)reader.GetInt32(4),
+            StatusText = reader.GetString(5),
+            LogicalSize = reader.GetInt64(6),
+            SizeOnDisk = reader.GetInt64(7),
+            FileCount = reader.GetInt64(8),
+            DirectoryCount = reader.GetInt64(9),
+            ModifiedAt = reader.IsDBNull(11)
+                ? null
+                : DateTimeOffset.Parse(reader.GetString(11), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            FileId = reader.GetString(12)
+        };
+        node.SetCachedSource(databasePath, reader.GetInt64(0), reader.GetInt32(10));
+        return node;
     }
 
-    private static bool MatchesQuery(string name, string fullPath, string query)
+    private static string ExecuteScalarString(SqliteConnection connection, string sql)
     {
-        return name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.Contains(query, StringComparison.OrdinalIgnoreCase);
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
     }
 
     private static bool MatchesCurrentMetadata(string path, CachedMetadata metadata)
@@ -473,7 +303,7 @@ public sealed class AnalysisCacheService
         }
 
         return current.Length == metadata.Length &&
-               current.LastWriteUtc == metadata.LastWriteUtc &&
+               current.LastWriteUtcTicks == metadata.LastWriteUtcTicks &&
                (string.IsNullOrWhiteSpace(metadata.FileId) || current.FileId == metadata.FileId);
     }
 
@@ -481,7 +311,10 @@ public sealed class AnalysisCacheService
     {
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrWhiteSpace(root) &&
-               string.Equals(PathRiskClassifier.Normalize(path), PathRiskClassifier.Normalize(root), StringComparison.OrdinalIgnoreCase);
+               string.Equals(
+                   PathRiskClassifier.Normalize(path),
+                   PathRiskClassifier.Normalize(root),
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static CachedMetadata ReadMetadata(string path)
@@ -491,235 +324,247 @@ public sealed class AnalysisCacheService
             var attributes = File.GetAttributes(path);
             var isDirectory = attributes.HasFlag(FileAttributes.Directory);
             FileSystemInfo info = isDirectory ? new DirectoryInfo(path) : new FileInfo(path);
-            var length = isDirectory ? 0 : ((FileInfo)info).Length;
-            return new CachedMetadata
-            {
-                Exists = true,
-                Length = length,
-                Attributes = attributes,
-                LastWriteUtc = info.LastWriteTimeUtc,
-                FileId = SystemInterop.GetFileId(path)
-            };
+            return new CachedMetadata(
+                isDirectory ? 0 : ((FileInfo)info).Length,
+                attributes,
+                info.LastWriteTimeUtc.Ticks,
+                SystemInterop.GetFileId(path),
+                Exists: true);
         }
         catch
         {
-            return new CachedMetadata { Exists = false };
+            return new CachedMetadata(0, 0, 0, string.Empty, Exists: false);
         }
-    }
-
-    private static CachedNodeRecord FromNode(ScanNode node)
-    {
-        return new CachedNodeRecord
-        {
-            FullPath = node.FullPath,
-            Name = node.Name,
-            Kind = node.Kind,
-            Risk = node.Risk,
-            StatusText = node.StatusText,
-            LogicalSize = node.LogicalSize,
-            SizeOnDisk = node.SizeOnDisk,
-            FileCount = node.FileCount,
-            DirectoryCount = node.DirectoryCount,
-            ChildCount = node.ChildCount,
-            ModifiedAt = node.ModifiedAt,
-            FileId = node.FileId
-        };
-    }
-
-    private static ScanNode ToNode(CachedNodeRecord cached, string dataPath, string indexPath)
-    {
-        var node = new ScanNode
-        {
-            FullPath = cached.FullPath,
-            Name = cached.Name,
-            Kind = cached.Kind,
-            ModifiedAt = cached.ModifiedAt,
-            FileId = cached.FileId
-        };
-
-        node.Risk = cached.Risk;
-        node.StatusText = cached.StatusText;
-        node.LogicalSize = cached.LogicalSize;
-        node.SizeOnDisk = cached.SizeOnDisk;
-        node.FileCount = cached.FileCount;
-        node.DirectoryCount = cached.DirectoryCount;
-        node.SetCachedSource(dataPath, indexPath, CurrentFormatVersion, cached.ChildCount);
-        return node;
     }
 
     private static void TryDelete(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
         try
         {
-            if (File.Exists(path))
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
             {
                 File.Delete(path);
             }
         }
         catch
         {
-            // Stale cache files are harmless and can be removed by Clear().
+            // Cleanup is best-effort.
         }
     }
+
+    private readonly record struct CachedMetadata(
+        long Length,
+        FileAttributes Attributes,
+        long LastWriteUtcTicks,
+        string FileId,
+        bool Exists = true);
+
+    internal readonly record struct NodeRecord(
+        long Id,
+        long? ParentId,
+        string FullPath,
+        string Name,
+        FileSystemItemKind Kind,
+        RiskLevel Risk,
+        string StatusText,
+        long LogicalSize,
+        long SizeOnDisk,
+        long FileCount,
+        long DirectoryCount,
+        int ChildCount,
+        DateTimeOffset? ModifiedAt,
+        string FileId);
 
     internal sealed class SnapshotWriter : IDisposable
     {
         private readonly AnalysisCacheService _owner;
         private readonly string _normalizedPath;
         private readonly SizeCalculationMode _sizeCalculationMode;
-        private readonly string _dataFileName;
-        private readonly string _indexFileName;
-        private readonly string _dataPath;
-        private readonly string _indexPath;
-        private readonly string _manifestPath;
-        private readonly string _temporaryDataPath;
-        private readonly string _temporaryIndexPath;
-        private readonly string _temporaryManifestPath;
-        private readonly string _backupManifestPath;
-        private readonly CachedSnapshotManifest? _previousManifest;
-        private readonly List<DirectoryIndexEntry> _indexEntries = [];
-        private FileStream? _dataStream;
-        private long _lastFlushedPosition;
-        private long _lastFlushTimestamp = Stopwatch.GetTimestamp();
-        private bool _failed;
+        private readonly string _databasePath;
+        private readonly string _temporaryPath;
+        private readonly SqliteConnection _connection;
+        private readonly SqliteTransaction _transaction;
+        private readonly SqliteCommand _insertNode;
+        private long _nextNodeId;
         private bool _completed;
-        private bool _manifestPublished;
 
         internal SnapshotWriter(
             AnalysisCacheService owner,
             string normalizedPath,
             SizeCalculationMode sizeCalculationMode,
-            string dataFileName,
-            string indexFileName,
-            string dataPath,
-            string indexPath,
-            string manifestPath,
-            string temporaryDataPath,
-            string temporaryIndexPath,
-            string temporaryManifestPath,
-            string backupManifestPath,
-            CachedSnapshotManifest? previousManifest)
+            string databasePath)
         {
             _owner = owner;
             _normalizedPath = normalizedPath;
             _sizeCalculationMode = sizeCalculationMode;
-            _dataFileName = dataFileName;
-            _indexFileName = indexFileName;
-            _dataPath = dataPath;
-            _indexPath = indexPath;
-            _manifestPath = manifestPath;
-            _temporaryDataPath = temporaryDataPath;
-            _temporaryIndexPath = temporaryIndexPath;
-            _temporaryManifestPath = temporaryManifestPath;
-            _backupManifestPath = backupManifestPath;
-            _previousManifest = previousManifest;
-            _dataStream = new FileStream(
-                temporaryDataPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.Read,
-                StreamBufferSize,
-                FileOptions.SequentialScan);
+            _databasePath = databasePath;
+            _temporaryPath = $"{databasePath}.{Guid.NewGuid():N}.writing";
+
+            _connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = _temporaryPath,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false
+            }.ToString());
+            _connection.Open();
+
+            using (var setup = _connection.CreateCommand())
+            {
+                setup.CommandText =
+                    $"""
+                    PRAGMA journal_mode=DELETE;
+                    PRAGMA synchronous=NORMAL;
+                    PRAGMA temp_store=FILE;
+                    PRAGMA cache_size=-{CacheSizeKiB};
+                    PRAGMA foreign_keys=OFF;
+
+                    CREATE TABLE Nodes (
+                        Id INTEGER PRIMARY KEY,
+                        ParentId INTEGER NULL,
+                        FullPath TEXT NOT NULL,
+                        Name TEXT NOT NULL,
+                        Kind INTEGER NOT NULL,
+                        Risk INTEGER NOT NULL,
+                        StatusText TEXT NOT NULL,
+                        LogicalSize INTEGER NOT NULL,
+                        SizeOnDisk INTEGER NOT NULL,
+                        FileCount INTEGER NOT NULL,
+                        DirectoryCount INTEGER NOT NULL,
+                        ChildCount INTEGER NOT NULL,
+                        ModifiedAt TEXT NULL,
+                        FileId TEXT NOT NULL
+                    );
+
+                    CREATE TABLE Snapshot (
+                        FormatVersion INTEGER NOT NULL,
+                        Path TEXT NOT NULL,
+                        CachedAt TEXT NOT NULL,
+                        SizeCalculationMode INTEGER NOT NULL,
+                        RootLength INTEGER NOT NULL,
+                        RootAttributes INTEGER NOT NULL,
+                        RootLastWriteUtcTicks INTEGER NOT NULL,
+                        RootFileId TEXT NOT NULL,
+                        RootNodeId INTEGER NOT NULL
+                    );
+                    """;
+                setup.ExecuteNonQuery();
+            }
+
+            _transaction = _connection.BeginTransaction();
+            _insertNode = _connection.CreateCommand();
+            _insertNode.Transaction = _transaction;
+            _insertNode.CommandText =
+                """
+                INSERT INTO Nodes (
+                    Id, ParentId, FullPath, Name, Kind, Risk, StatusText, LogicalSize,
+                    SizeOnDisk, FileCount, DirectoryCount, ChildCount, ModifiedAt, FileId)
+                VALUES (
+                    $id, $parentId, $fullPath, $name, $kind, $risk, $statusText, $logicalSize,
+                    $sizeOnDisk, $fileCount, $directoryCount, $childCount, $modifiedAt, $fileId);
+                """;
+            foreach (var parameterName in new[]
+                     {
+                         "$id", "$parentId", "$fullPath", "$name", "$kind", "$risk", "$statusText",
+                         "$logicalSize", "$sizeOnDisk", "$fileCount", "$directoryCount", "$childCount",
+                         "$modifiedAt", "$fileId"
+                     })
+            {
+                _insertNode.Parameters.Add(new SqliteParameter(parameterName, null));
+            }
+            _insertNode.Prepare();
         }
 
-        public void WriteDirectory(ScanNode directory)
+        public long NextNodeId()
         {
-            if (_failed || _completed || directory.ChildCount == 0 || _dataStream is null)
-            {
-                return;
-            }
-
-            try
-            {
-                var offset = _dataStream.Position;
-                foreach (var child in directory.ExistingChildren)
-                {
-                    _owner.WriteJsonLine(_dataStream, FromNode(child));
-                }
-
-                _indexEntries.Add(new DirectoryIndexEntry(
-                    HashPath(directory.FullPath),
-                    offset,
-                    directory.ChildCount));
-
-                var bytesSinceFlush = _dataStream.Position - _lastFlushedPosition;
-                if (bytesSinceFlush >= 1024 * 1024 ||
-                    Stopwatch.GetElapsedTime(_lastFlushTimestamp) >= TimeSpan.FromMilliseconds(500))
-                {
-                    // Keep the growing cache visible without forcing a write for every tiny folder.
-                    _dataStream.Flush();
-                    _lastFlushedPosition = _dataStream.Position;
-                    _lastFlushTimestamp = Stopwatch.GetTimestamp();
-                }
-            }
-            catch
-            {
-                Fail();
-            }
+            return ++_nextNodeId;
         }
 
-        public bool Commit(ScanNode root)
+        public void WriteNode(NodeRecord node)
         {
-            if (_failed || _completed || _dataStream is null)
+            Set("$id", node.Id);
+            Set("$parentId", node.ParentId);
+            Set("$fullPath", node.FullPath);
+            Set("$name", node.Name);
+            Set("$kind", (int)node.Kind);
+            Set("$risk", (int)node.Risk);
+            Set("$statusText", node.StatusText);
+            Set("$logicalSize", node.LogicalSize);
+            Set("$sizeOnDisk", node.SizeOnDisk);
+            Set("$fileCount", node.FileCount);
+            Set("$directoryCount", node.DirectoryCount);
+            Set("$childCount", node.ChildCount);
+            Set("$modifiedAt", node.ModifiedAt?.ToString("O", CultureInfo.InvariantCulture));
+            Set("$fileId", node.FileId);
+            _insertNode.ExecuteNonQuery();
+        }
+
+        public bool Commit(long rootNodeId)
+        {
+            if (_completed)
             {
                 return false;
             }
 
             try
             {
-                _dataStream.Flush(flushToDisk: true);
-                _dataStream.Dispose();
-                _dataStream = null;
-
-                _owner.WriteIndexFile(_temporaryIndexPath, _indexEntries);
-                File.Move(_temporaryDataPath, _dataPath);
-                File.Move(_temporaryIndexPath, _indexPath);
-
-                var manifest = new CachedSnapshotManifest
+                var metadata = ReadMetadata(_normalizedPath);
+                if (!metadata.Exists)
                 {
-                    FormatVersion = CurrentFormatVersion,
-                    Path = _normalizedPath,
-                    CachedAt = DateTimeOffset.UtcNow,
-                    SizeCalculationMode = _sizeCalculationMode,
-                    Metadata = ReadMetadata(root.FullPath),
-                    DataFileName = _dataFileName,
-                    IndexFileName = _indexFileName,
-                    Root = FromNode(root)
-                };
-
-                using (var stream = new FileStream(
-                           _temporaryManifestPath,
-                           FileMode.CreateNew,
-                           FileAccess.Write,
-                           FileShare.None,
-                           StreamBufferSize,
-                           FileOptions.SequentialScan))
-                {
-                    JsonSerializer.Serialize(stream, manifest, _owner._jsonOptions);
-                    stream.Flush(flushToDisk: true);
+                    return false;
                 }
 
-                if (File.Exists(_manifestPath))
+                using (var snapshot = _connection.CreateCommand())
                 {
-                    File.Copy(_manifestPath, _backupManifestPath);
+                    snapshot.Transaction = _transaction;
+                    snapshot.CommandText =
+                        """
+                        INSERT INTO Snapshot (
+                            FormatVersion, Path, CachedAt, SizeCalculationMode, RootLength,
+                            RootAttributes, RootLastWriteUtcTicks, RootFileId, RootNodeId)
+                        VALUES (
+                            $formatVersion, $path, $cachedAt, $sizeCalculationMode, $rootLength,
+                            $rootAttributes, $rootLastWriteUtcTicks, $rootFileId, $rootNodeId);
+                        """;
+                    snapshot.Parameters.AddWithValue("$formatVersion", CurrentFormatVersion);
+                    snapshot.Parameters.AddWithValue("$path", _normalizedPath);
+                    snapshot.Parameters.AddWithValue("$cachedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                    snapshot.Parameters.AddWithValue("$sizeCalculationMode", (int)_sizeCalculationMode);
+                    snapshot.Parameters.AddWithValue("$rootLength", metadata.Length);
+                    snapshot.Parameters.AddWithValue("$rootAttributes", (long)metadata.Attributes);
+                    snapshot.Parameters.AddWithValue("$rootLastWriteUtcTicks", metadata.LastWriteUtcTicks);
+                    snapshot.Parameters.AddWithValue("$rootFileId", metadata.FileId);
+                    snapshot.Parameters.AddWithValue("$rootNodeId", rootNodeId);
+                    snapshot.ExecuteNonQuery();
                 }
 
-                File.Move(_temporaryManifestPath, _manifestPath, overwrite: true);
-                _manifestPublished = true;
+                using (var indexes = _connection.CreateCommand())
+                {
+                    indexes.Transaction = _transaction;
+                    indexes.CommandText =
+                        """
+                        CREATE INDEX IX_Nodes_Parent_Size_Name
+                            ON Nodes (ParentId, SizeOnDisk DESC, Name COLLATE NOCASE);
+                        CREATE INDEX IX_Nodes_FullPath
+                            ON Nodes (FullPath COLLATE NOCASE);
+                        """;
+                    indexes.ExecuteNonQuery();
+                }
+
+                _transaction.Commit();
+                _insertNode.Dispose();
+                _transaction.Dispose();
+                _connection.Close();
+                _connection.Dispose();
+
+                File.Move(_temporaryPath, _databasePath, overwrite: true);
                 _completed = true;
-                _owner.DeleteManifestFiles(_previousManifest, _dataFileName, _indexFileName);
-                TryDelete(_backupManifestPath);
+                _owner.DeleteLegacyCacheFiles(_databasePath);
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
-                Fail();
-                return false;
+                throw new IOException("Не удалось опубликовать SQLite-кэш анализа.", ex);
             }
         }
 
@@ -727,123 +572,48 @@ public sealed class AnalysisCacheService
         {
             if (!_completed)
             {
-                Fail();
-            }
-        }
-
-        private void Fail()
-        {
-            if (_failed)
-            {
-                return;
-            }
-
-            _failed = true;
-            try
-            {
-                _dataStream?.Dispose();
-            }
-            catch
-            {
-                // Cleanup below is best-effort.
-            }
-
-            _dataStream = null;
-            RestorePreviousManifest();
-            TryDelete(_temporaryDataPath);
-            TryDelete(_temporaryIndexPath);
-            TryDelete(_temporaryManifestPath);
-            TryDelete(_backupManifestPath);
-            TryDelete(_dataPath);
-            TryDelete(_indexPath);
-        }
-
-        private void RestorePreviousManifest()
-        {
-            if (!_manifestPublished)
-            {
-                return;
-            }
-
-            try
-            {
-                if (File.Exists(_backupManifestPath))
+                try
                 {
-                    File.Move(_backupManifestPath, _manifestPath, overwrite: true);
+                    _transaction.Rollback();
                 }
-                else
+                catch
                 {
-                    TryDelete(_manifestPath);
+                    // The transaction may already be closed after a failed commit.
+                }
+
+                _insertNode.Dispose();
+                _transaction.Dispose();
+                _connection.Dispose();
+                TryDelete(_temporaryPath);
+            }
+        }
+
+        private void Set(string parameterName, object? value)
+        {
+            _insertNode.Parameters[parameterName].Value = value ?? DBNull.Value;
+        }
+    }
+
+    private void DeleteLegacyCacheFiles(string currentDatabasePath)
+    {
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(_cacheDirectory, "analysis-cache*"))
+            {
+                if (!string.Equals(path, currentDatabasePath, StringComparison.OrdinalIgnoreCase) &&
+                    (path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) ||
+                     path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) ||
+                     path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+                     path.EndsWith(".writing", StringComparison.OrdinalIgnoreCase) ||
+                     path.EndsWith(".backup", StringComparison.OrdinalIgnoreCase)))
+                {
+                    TryDelete(path);
                 }
             }
-            catch
-            {
-                // The old data files remain intact even if restoring the manifest fails.
-            }
         }
-    }
-
-    private readonly record struct DirectoryIndexEntry(byte[] Hash, long Offset, int ChildCount);
-
-    internal sealed class CachedSnapshotManifest
-    {
-        public int FormatVersion { get; set; }
-
-        public string Path { get; set; } = string.Empty;
-
-        public DateTimeOffset CachedAt { get; set; }
-
-        public SizeCalculationMode SizeCalculationMode { get; set; }
-
-        public CachedMetadata Metadata { get; set; } = new();
-
-        public string DataFileName { get; set; } = string.Empty;
-
-        public string IndexFileName { get; set; } = string.Empty;
-
-        public CachedNodeRecord Root { get; set; } = new();
-    }
-
-    internal sealed class CachedMetadata
-    {
-        public bool Exists { get; set; }
-
-        public long Length { get; set; }
-
-        public DateTime LastWriteUtc { get; set; }
-
-        [JsonConverter(typeof(JsonStringEnumConverter<FileAttributes>))]
-        public FileAttributes Attributes { get; set; }
-
-        public string FileId { get; set; } = string.Empty;
-    }
-
-    internal sealed class CachedNodeRecord
-    {
-        public string FullPath { get; set; } = string.Empty;
-
-        public string Name { get; set; } = string.Empty;
-
-        [JsonConverter(typeof(JsonStringEnumConverter<FileSystemItemKind>))]
-        public FileSystemItemKind Kind { get; set; }
-
-        [JsonConverter(typeof(JsonStringEnumConverter<RiskLevel>))]
-        public RiskLevel Risk { get; set; }
-
-        public string StatusText { get; set; } = string.Empty;
-
-        public long LogicalSize { get; set; }
-
-        public long SizeOnDisk { get; set; }
-
-        public long FileCount { get; set; }
-
-        public long DirectoryCount { get; set; }
-
-        public int ChildCount { get; set; }
-
-        public DateTimeOffset? ModifiedAt { get; set; }
-
-        public string FileId { get; set; } = string.Empty;
+        catch
+        {
+            // Legacy cache cleanup is optional.
+        }
     }
 }

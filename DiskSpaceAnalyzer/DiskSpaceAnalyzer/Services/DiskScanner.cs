@@ -24,138 +24,177 @@ public sealed class DiskScanner
         return Task.Run(() =>
         {
             var normalized = PathRiskClassifier.Normalize(path);
-            if (!options.IgnoreCache && _cache.TryRestoreSnapshot(normalized, options.SizeCalculationMode, out var cached) && cached is not null)
+            if (!options.IgnoreCache &&
+                _cache.TryRestoreSnapshot(normalized, options.SizeCalculationMode, out var cached) &&
+                cached is not null)
             {
-                AddCachedCounters(cached, out var files, out var directories, out var logical, out var onDisk);
-                progress?.Report(new ScanProgressInfo
-                {
-                    CurrentPath = normalized,
-                    ProcessedFiles = files,
-                    ProcessedDirectories = directories,
-                    LogicalBytes = logical,
-                    SizeOnDiskBytes = onDisk,
-                    Message = "Загружено из кеша"
-                });
+                ReportCachedResult(cached, normalized, progress);
                 return cached;
             }
 
-            using var cacheWriter = _cache.BeginSnapshot(normalized, options.SizeCalculationMode);
+            using var writer = _cache.BeginSnapshot(normalized, options.SizeCalculationMode);
             var counters = new ScanCounters();
             var activeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var root = ScanEntry(
                 normalized,
                 fileSystemInfo: null,
+                parentId: null,
                 options,
                 counters,
                 progress,
                 cancellationToken,
-                isRootChild: true,
+                reportDirectChildren: true,
                 activeDirectories,
-                cacheWriter);
-            root.IsExpanded = true;
+                writer);
 
-            if (!cancellationToken.IsCancellationRequested && root.Risk is not RiskLevel.Skipped and not RiskLevel.NoAccess)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!writer.Commit(root.Id) ||
+                !_cache.TryRestoreSnapshot(normalized, options.SizeCalculationMode, out var result) ||
+                result is null)
             {
-                cacheWriter?.Commit(root);
+                throw new IOException("Не удалось сохранить результаты анализа в локальный кэш.");
             }
 
-            return root;
-        });
+            result.IsExpanded = true;
+            return result;
+        }, cancellationToken);
     }
 
-    private ScanNode ScanEntry(
+    private ScanAggregate ScanEntry(
         string path,
         FileSystemInfo? fileSystemInfo,
+        long? parentId,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
-        bool isRootChild,
+        bool reportDirectChildren,
         HashSet<string> activeDirectories,
-        AnalysisCacheService.SnapshotWriter? cacheWriter)
+        AnalysisCacheService.SnapshotWriter writer)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         counters.CurrentPath = path;
         ReportProgress(counters, progress);
 
-        if (cancellationToken.IsCancellationRequested)
-        {
-            return CreateCanceledNode(path);
-        }
-
+        var nodeId = writer.NextNodeId();
         try
         {
             var attributes = fileSystemInfo?.Attributes ?? File.GetAttributes(path);
             if (attributes.HasFlag(FileAttributes.ReparsePoint) &&
                 (!options.IncludeSystemDirectories || !attributes.HasFlag(FileAttributes.Directory)))
             {
-                var linkNode = CreateBaseNode(path, FileSystemItemKind.Link, _classifier.Classify(path), "Ссылка пропущена");
-                FillMetadata(linkNode, fileSystemInfo);
-                return linkNode;
+                var link = new ScanAggregate(
+                    nodeId,
+                    FileSystemItemKind.Link,
+                    _classifier.Classify(path),
+                    "Ссылка пропущена",
+                    ModifiedAt: ReadModifiedAt(fileSystemInfo, path));
+                WriteNode(writer, link, parentId, path);
+                return link;
             }
 
-            if (attributes.HasFlag(FileAttributes.Directory))
-            {
-                return ScanDirectory(path, fileSystemInfo, options, counters, progress, cancellationToken, isRootChild, activeDirectories, cacheWriter);
-            }
-
-            return ScanFile(path, fileSystemInfo, options, counters);
+            return attributes.HasFlag(FileAttributes.Directory)
+                ? ScanDirectory(
+                    nodeId,
+                    parentId,
+                    path,
+                    fileSystemInfo,
+                    options,
+                    counters,
+                    progress,
+                    cancellationToken,
+                    reportDirectChildren,
+                    activeDirectories,
+                    writer)
+                : ScanFile(nodeId, parentId, path, fileSystemInfo, options, counters, writer);
         }
         catch (UnauthorizedAccessException)
         {
             counters.Directories++;
-            return CreateBaseNode(path, FileSystemItemKind.NoAccess, RiskLevel.NoAccess, "Нет доступа");
+            return WriteErrorNode(
+                writer,
+                nodeId,
+                parentId,
+                path,
+                "Нет доступа",
+                ReadModifiedAt(fileSystemInfo, path));
         }
         catch (DirectoryNotFoundException)
         {
-            return CreateBaseNode(path, FileSystemItemKind.NoAccess, RiskLevel.NoAccess, "Путь не найден");
+            return WriteErrorNode(writer, nodeId, parentId, path, "Путь не найден");
         }
         catch (FileNotFoundException)
         {
-            return CreateBaseNode(path, FileSystemItemKind.NoAccess, RiskLevel.NoAccess, "Файл не найден");
+            return WriteErrorNode(writer, nodeId, parentId, path, "Файл не найден");
         }
         catch (IOException ex)
         {
-            return CreateBaseNode(path, FileSystemItemKind.NoAccess, RiskLevel.NoAccess, ex.Message);
+            return WriteErrorNode(writer, nodeId, parentId, path, ex.Message);
         }
     }
 
-    private ScanNode ScanDirectory(
+    private ScanAggregate ScanDirectory(
+        long nodeId,
+        long? parentId,
         string path,
         FileSystemInfo? fileSystemInfo,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
-        bool isRootChild,
+        bool reportDirectChildren,
         HashSet<string> activeDirectories,
-        AnalysisCacheService.SnapshotWriter? cacheWriter)
+        AnalysisCacheService.SnapshotWriter writer)
     {
         var decision = _classifier.Evaluate(path, options.IncludeSystemDirectories, options.ExcludedPaths);
-        var node = CreateBaseNode(path, FileSystemItemKind.Folder, decision.Risk, decision.StatusText);
-        FillMetadata(node, fileSystemInfo);
-        if (options.SizeCalculationMode == SizeCalculationMode.Exact)
-        {
-            node.SizeOnDisk = SystemInterop.GetExactSizeOnDisk(path, 0, isDirectory: true);
-        }
+        var modifiedAt = ReadModifiedAt(fileSystemInfo, path);
+        var ownSizeOnDisk = options.SizeCalculationMode == SizeCalculationMode.Exact
+            ? SystemInterop.GetExactSizeOnDisk(path, 0, isDirectory: true)
+            : 0;
 
         if (decision.ShouldSkip)
         {
-            node.Risk = RiskLevel.Skipped;
-            node.StatusText = decision.StatusText;
-            return node;
+            var skipped = new ScanAggregate(
+                nodeId,
+                FileSystemItemKind.Folder,
+                RiskLevel.Skipped,
+                decision.StatusText,
+                SizeOnDisk: ownSizeOnDisk,
+                ModifiedAt: modifiedAt);
+            WriteNode(writer, skipped, parentId, path);
+            return skipped;
         }
 
         var directoryIdentity = GetDirectoryIdentity(path, fileSystemInfo);
         if (!activeDirectories.Add(directoryIdentity))
         {
-            node.Kind = FileSystemItemKind.Link;
-            node.StatusText = "Циклическая ссылка";
-            return node;
+            var link = new ScanAggregate(
+                nodeId,
+                FileSystemItemKind.Link,
+                decision.Risk,
+                "Циклическая ссылка",
+                SizeOnDisk: ownSizeOnDisk,
+                ModifiedAt: modifiedAt);
+            WriteNode(writer, link, parentId, path);
+            return link;
         }
 
         try
         {
-            return ScanDirectoryContents(node, path, options, counters, progress, cancellationToken, isRootChild, activeDirectories, cacheWriter);
+            return ScanDirectoryContents(
+                nodeId,
+                parentId,
+                path,
+                decision.Risk,
+                modifiedAt,
+                ownSizeOnDisk,
+                options,
+                counters,
+                progress,
+                cancellationToken,
+                reportDirectChildren,
+                activeDirectories,
+                writer);
         }
         finally
         {
@@ -163,22 +202,23 @@ public sealed class DiskScanner
         }
     }
 
-    private ScanNode ScanDirectoryContents(
-        ScanNode node,
+    private ScanAggregate ScanDirectoryContents(
+        long nodeId,
+        long? parentId,
         string path,
+        RiskLevel risk,
+        DateTimeOffset? modifiedAt,
+        long ownSizeOnDisk,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken,
-        bool isRootChild,
+        bool reportDirectChildren,
         HashSet<string> activeDirectories,
-        AnalysisCacheService.SnapshotWriter? cacheWriter)
+        AnalysisCacheService.SnapshotWriter writer)
     {
         counters.Directories++;
-        counters.SizeOnDiskBytes += node.SizeOnDisk;
-        node.StatusText = options.IncludeSystemDirectories || !_classifier.IsWindowsRoot(path)
-            ? "Сканируется"
-            : "Частичный безопасный анализ";
+        counters.SizeOnDiskBytes += ownSizeOnDisk;
 
         IEnumerable<FileSystemInfo> entries;
         try
@@ -187,75 +227,212 @@ public sealed class DiskScanner
         }
         catch (UnauthorizedAccessException)
         {
-            node.Kind = FileSystemItemKind.NoAccess;
-            node.Risk = RiskLevel.NoAccess;
-            node.StatusText = "Нет доступа";
-            cacheWriter?.WriteDirectory(node);
-            return node;
+            return WriteErrorNode(writer, nodeId, parentId, path, "Нет доступа", modifiedAt);
         }
         catch (IOException ex)
         {
-            node.Kind = FileSystemItemKind.NoAccess;
-            node.Risk = RiskLevel.NoAccess;
-            node.StatusText = ex.Message;
-            cacheWriter?.WriteDirectory(node);
-            return node;
+            return WriteErrorNode(writer, nodeId, parentId, path, ex.Message, modifiedAt);
         }
+
+        var aggregate = new ScanAggregate(
+            nodeId,
+            FileSystemItemKind.Folder,
+            risk,
+            "Готово",
+            SizeOnDisk: ownSizeOnDisk,
+            ModifiedAt: modifiedAt);
 
         try
         {
             foreach (var childInfo in entries)
             {
-                var childPath = childInfo.FullName;
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    node.StatusText = "Отменено";
-                    break;
-                }
+                cancellationToken.ThrowIfCancellationRequested();
+                var child = ScanEntry(
+                    childInfo.FullName,
+                    childInfo,
+                    nodeId,
+                    options,
+                    counters,
+                    progress,
+                    cancellationToken,
+                    reportDirectChildren: false,
+                    activeDirectories,
+                    writer);
+                aggregate = Accumulate(aggregate, child);
 
-                var child = ScanEntry(childPath, childInfo, options, counters, progress, cancellationToken, isRootChild: false, activeDirectories, cacheWriter);
-                node.AddChild(child);
-                Accumulate(node, child);
-
-                if (isRootChild)
+                if (reportDirectChildren)
                 {
                     progress?.Report(new ScanProgressInfo
                     {
-                        CurrentPath = childPath,
+                        CurrentPath = childInfo.FullName,
                         ProcessedFiles = counters.Files,
                         ProcessedDirectories = counters.Directories,
                         LogicalBytes = counters.LogicalBytes,
                         SizeOnDiskBytes = counters.SizeOnDiskBytes,
-                        CompletedRootChild = child
+                        CompletedRootChild = ToProgressNode(childInfo.FullName, child)
                     });
                 }
             }
         }
         catch (UnauthorizedAccessException)
         {
-            node.Kind = FileSystemItemKind.NoAccess;
-            node.Risk = RiskLevel.NoAccess;
-            node.StatusText = "Нет доступа";
-            cacheWriter?.WriteDirectory(node);
-            return node;
+            aggregate = aggregate with
+            {
+                Kind = FileSystemItemKind.NoAccess,
+                Risk = RiskLevel.NoAccess,
+                StatusText = "Нет доступа"
+            };
         }
         catch (IOException ex)
         {
-            node.Kind = FileSystemItemKind.NoAccess;
-            node.Risk = RiskLevel.NoAccess;
-            node.StatusText = ex.Message;
-            cacheWriter?.WriteDirectory(node);
-            return node;
+            aggregate = aggregate with
+            {
+                Kind = FileSystemItemKind.NoAccess,
+                Risk = RiskLevel.NoAccess,
+                StatusText = ex.Message
+            };
         }
 
-        node.SortChildrenBySize();
-        if (!cancellationToken.IsCancellationRequested)
+        WriteNode(writer, aggregate, parentId, path);
+        return aggregate;
+    }
+
+    private ScanAggregate ScanFile(
+        long nodeId,
+        long? parentId,
+        string path,
+        FileSystemInfo? fileSystemInfo,
+        ScanOptions options,
+        ScanCounters counters,
+        AnalysisCacheService.SnapshotWriter writer)
+    {
+        var kind = FileSystemItemKind.File;
+        var risk = _classifier.Classify(path);
+        var status = "Готово";
+        var logicalSize = 0L;
+        var sizeOnDisk = 0L;
+        DateTimeOffset? modifiedAt = null;
+
+        try
         {
-            node.StatusText = "Готово";
-            cacheWriter?.WriteDirectory(node);
+            var info = fileSystemInfo as FileInfo ?? new FileInfo(path);
+            logicalSize = info.Length;
+            sizeOnDisk = options.SizeCalculationMode switch
+            {
+                SizeCalculationMode.Exact => SystemInterop.GetExactSizeOnDisk(path, logicalSize),
+                SizeCalculationMode.Approximate => SystemInterop.GetApproximateSizeOnDisk(path, logicalSize),
+                _ => logicalSize
+            };
+            modifiedAt = info.LastWriteTime;
+        }
+        catch
+        {
+            kind = FileSystemItemKind.NoAccess;
+            risk = RiskLevel.NoAccess;
+            status = "Нет доступа к метаданным";
         }
 
-        return node;
+        counters.Files++;
+        counters.LogicalBytes += logicalSize;
+        counters.SizeOnDiskBytes += sizeOnDisk;
+
+        var result = new ScanAggregate(
+            nodeId,
+            kind,
+            risk,
+            status,
+            logicalSize,
+            sizeOnDisk,
+            ModifiedAt: modifiedAt);
+        WriteNode(writer, result, parentId, path);
+        return result;
+    }
+
+    private static ScanAggregate WriteErrorNode(
+        AnalysisCacheService.SnapshotWriter writer,
+        long nodeId,
+        long? parentId,
+        string path,
+        string status,
+        DateTimeOffset? modifiedAt = null)
+    {
+        var result = new ScanAggregate(
+            nodeId,
+            FileSystemItemKind.NoAccess,
+            RiskLevel.NoAccess,
+            status,
+            ModifiedAt: modifiedAt);
+        WriteNode(writer, result, parentId, path);
+        return result;
+    }
+
+    private static void WriteNode(
+        AnalysisCacheService.SnapshotWriter writer,
+        ScanAggregate node,
+        long? parentId,
+        string path)
+    {
+        writer.WriteNode(new AnalysisCacheService.NodeRecord(
+            node.Id,
+            parentId,
+            path,
+            GetDisplayName(path),
+            node.Kind,
+            node.Risk,
+            node.StatusText,
+            node.LogicalSize,
+            node.SizeOnDisk,
+            node.FileCount,
+            node.DirectoryCount,
+            node.ChildCount,
+            node.ModifiedAt,
+            string.Empty));
+    }
+
+    private static ScanAggregate Accumulate(ScanAggregate parent, ScanAggregate child)
+    {
+        var directFiles = child.Kind is FileSystemItemKind.File or FileSystemItemKind.Link ? 1 : 0;
+        var directDirectories = child.Kind == FileSystemItemKind.Folder ? 1 : 0;
+        return parent with
+        {
+            LogicalSize = parent.LogicalSize + child.LogicalSize,
+            SizeOnDisk = parent.SizeOnDisk + child.SizeOnDisk,
+            FileCount = parent.FileCount + child.FileCount + directFiles,
+            DirectoryCount = parent.DirectoryCount + child.DirectoryCount + directDirectories,
+            ChildCount = parent.ChildCount + 1
+        };
+    }
+
+    private static ScanNode ToProgressNode(string path, ScanAggregate aggregate)
+    {
+        return new ScanNode
+        {
+            FullPath = path,
+            Name = GetDisplayName(path),
+            Kind = aggregate.Kind,
+            Risk = aggregate.Risk,
+            StatusText = aggregate.StatusText,
+            LogicalSize = aggregate.LogicalSize,
+            SizeOnDisk = aggregate.SizeOnDisk,
+            FileCount = aggregate.FileCount,
+            DirectoryCount = aggregate.DirectoryCount,
+            ModifiedAt = aggregate.ModifiedAt
+        };
+    }
+
+    private static DateTimeOffset? ReadModifiedAt(FileSystemInfo? fileSystemInfo, string path)
+    {
+        try
+        {
+            fileSystemInfo ??= Directory.Exists(path)
+                ? new DirectoryInfo(path)
+                : new FileInfo(path);
+            return fileSystemInfo.LastWriteTime;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string GetDirectoryIdentity(string path, FileSystemInfo? fileSystemInfo)
@@ -290,103 +467,6 @@ public sealed class DiskScanner
         });
     }
 
-    private ScanNode ScanFile(string path, FileSystemInfo? fileSystemInfo, ScanOptions options, ScanCounters counters)
-    {
-        var node = CreateBaseNode(path, FileSystemItemKind.File, _classifier.Classify(path), "Готово");
-        FillMetadata(node, fileSystemInfo);
-
-        try
-        {
-            var info = fileSystemInfo as FileInfo ?? new FileInfo(path);
-            node.LogicalSize = info.Length;
-            node.SizeOnDisk = options.SizeCalculationMode switch
-            {
-                SizeCalculationMode.Exact => SystemInterop.GetExactSizeOnDisk(path, node.LogicalSize),
-                SizeCalculationMode.Approximate => SystemInterop.GetApproximateSizeOnDisk(path, node.LogicalSize),
-                _ => node.LogicalSize
-            };
-            node.ModifiedAt = info.LastWriteTime;
-        }
-        catch
-        {
-            node.Kind = FileSystemItemKind.NoAccess;
-            node.Risk = RiskLevel.NoAccess;
-            node.StatusText = "Нет доступа к метаданным";
-        }
-
-        counters.Files++;
-        counters.LogicalBytes += node.LogicalSize;
-        counters.SizeOnDiskBytes += node.SizeOnDisk;
-        return node;
-    }
-
-    private static ScanNode CreateBaseNode(string path, FileSystemItemKind kind, RiskLevel risk, string status)
-    {
-        return new ScanNode
-        {
-            FullPath = path,
-            Name = GetDisplayName(path),
-            Kind = kind,
-            Risk = risk,
-            StatusText = status
-        };
-    }
-
-    private static ScanNode CreateCanceledNode(string path)
-    {
-        return CreateBaseNode(
-            path,
-            Directory.Exists(path) ? FileSystemItemKind.Folder : FileSystemItemKind.File,
-            RiskLevel.Skipped,
-            "Отменено");
-    }
-
-    private static void FillMetadata(ScanNode node, FileSystemInfo? fileSystemInfo)
-    {
-        try
-        {
-            fileSystemInfo ??= Directory.Exists(node.FullPath)
-                ? new DirectoryInfo(node.FullPath)
-                : new FileInfo(node.FullPath);
-            node.ModifiedAt = fileSystemInfo.LastWriteTime;
-        }
-        catch
-        {
-            node.ModifiedAt = null;
-        }
-    }
-
-    private static void Accumulate(ScanNode parent, ScanNode child)
-    {
-        parent.LogicalSize += child.LogicalSize;
-        parent.SizeOnDisk += child.SizeOnDisk;
-
-        if (child.Kind == FileSystemItemKind.File || child.Kind == FileSystemItemKind.Link)
-        {
-            parent.FileCount++;
-        }
-        else if (child.Kind == FileSystemItemKind.Folder)
-        {
-            parent.DirectoryCount++;
-        }
-
-        parent.FileCount += child.FileCount;
-        parent.DirectoryCount += child.DirectoryCount;
-    }
-
-    private static void AddCachedCounters(
-        ScanNode node,
-        out long files,
-        out long directories,
-        out long logical,
-        out long onDisk)
-    {
-        files = node.Kind == FileSystemItemKind.File ? 1 : node.FileCount;
-        directories = node.Kind == FileSystemItemKind.Folder ? 1 + node.DirectoryCount : node.DirectoryCount;
-        logical = node.LogicalSize;
-        onDisk = node.SizeOnDisk;
-    }
-
     private static string GetDisplayName(string path)
     {
         var root = Path.GetPathRoot(path);
@@ -396,6 +476,22 @@ public sealed class DiskScanner
         }
 
         return Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+    }
+
+    private static void ReportCachedResult(
+        ScanNode cached,
+        string normalized,
+        IProgress<ScanProgressInfo>? progress)
+    {
+        progress?.Report(new ScanProgressInfo
+        {
+            CurrentPath = normalized,
+            ProcessedFiles = cached.Kind == FileSystemItemKind.File ? 1 : cached.FileCount,
+            ProcessedDirectories = cached.Kind == FileSystemItemKind.Folder ? 1 + cached.DirectoryCount : cached.DirectoryCount,
+            LogicalBytes = cached.LogicalSize,
+            SizeOnDiskBytes = cached.SizeOnDisk,
+            Message = "Загружено из кэша"
+        });
     }
 
     private static void ReportProgress(ScanCounters counters, IProgress<ScanProgressInfo>? progress)
@@ -415,6 +511,18 @@ public sealed class DiskScanner
             SizeOnDiskBytes = counters.SizeOnDiskBytes
         });
     }
+
+    private readonly record struct ScanAggregate(
+        long Id,
+        FileSystemItemKind Kind,
+        RiskLevel Risk,
+        string StatusText,
+        long LogicalSize = 0,
+        long SizeOnDisk = 0,
+        long FileCount = 0,
+        long DirectoryCount = 0,
+        int ChildCount = 0,
+        DateTimeOffset? ModifiedAt = null);
 
     private sealed class ScanCounters
     {

@@ -15,6 +15,12 @@ namespace DiskSpaceAnalyzer.Models;
 public sealed class ScanNode : ViewModelBase
 {
     private static readonly IReadOnlyList<ScanNode> EmptyChildren = Array.Empty<ScanNode>();
+    private static readonly Brush SafeBrush = CreateFrozenBrush(32, 132, 92);
+    private static readonly Brush ReviewBrush = CreateFrozenBrush(166, 111, 0);
+    private static readonly Brush SystemBrush = CreateFrozenBrush(64, 102, 175);
+    private static readonly Brush DangerousBrush = CreateFrozenBrush(191, 67, 67);
+    private static readonly Brush SkippedBrush = CreateFrozenBrush(111, 111, 111);
+    private static readonly Brush NoAccessBrush = CreateFrozenBrush(132, 77, 160);
 
     private ScanNodeCollection? _children;
     private int _cachedChildCount;
@@ -50,13 +56,11 @@ public sealed class ScanNode : ViewModelBase
 
     internal bool HasUnloadedCachedChildren => IsCacheBacked && !_areChildrenLoaded && _cachedChildCount > 0;
 
-    internal bool IsCacheBacked => !string.IsNullOrWhiteSpace(CacheDataPath);
+    internal bool IsCacheBacked => !string.IsNullOrWhiteSpace(CacheDatabasePath) && CacheNodeId > 0;
 
-    internal string? CacheDataPath { get; private set; }
+    internal string? CacheDatabasePath { get; private set; }
 
-    internal string? CacheIndexPath { get; private set; }
-
-    internal int CacheFormatVersion { get; private set; }
+    internal long CacheNodeId { get; private set; }
 
     public ScanNode? Parent { get; set; }
 
@@ -193,12 +197,12 @@ public sealed class ScanNode : ViewModelBase
 
     public Brush RiskBrush => Risk switch
     {
-        RiskLevel.Safe => new SolidColorBrush(Color.FromRgb(32, 132, 92)),
-        RiskLevel.Review => new SolidColorBrush(Color.FromRgb(166, 111, 0)),
-        RiskLevel.System => new SolidColorBrush(Color.FromRgb(64, 102, 175)),
-        RiskLevel.Dangerous => new SolidColorBrush(Color.FromRgb(191, 67, 67)),
-        RiskLevel.Skipped => new SolidColorBrush(Color.FromRgb(111, 111, 111)),
-        RiskLevel.NoAccess => new SolidColorBrush(Color.FromRgb(132, 77, 160)),
+        RiskLevel.Safe => SafeBrush,
+        RiskLevel.Review => ReviewBrush,
+        RiskLevel.System => SystemBrush,
+        RiskLevel.Dangerous => DangerousBrush,
+        RiskLevel.Skipped => SkippedBrush,
+        RiskLevel.NoAccess => NoAccessBrush,
         _ => Brushes.Gray
     };
 
@@ -243,11 +247,10 @@ public sealed class ScanNode : ViewModelBase
         OnPropertyChanged(nameof(ChildCount));
     }
 
-    internal void SetCachedSource(string dataPath, string? indexPath, int formatVersion, int childCount)
+    internal void SetCachedSource(string databasePath, long nodeId, int childCount)
     {
-        CacheDataPath = dataPath;
-        CacheIndexPath = indexPath;
-        CacheFormatVersion = formatVersion;
+        CacheDatabasePath = databasePath;
+        CacheNodeId = nodeId;
         _cachedChildCount = Math.Max(0, childCount);
         _areChildrenLoaded = _cachedChildCount == 0;
         OnPropertyChanged(nameof(ChildCount));
@@ -285,6 +288,13 @@ public sealed class ScanNode : ViewModelBase
         var children = new ScanNodeCollection();
         children.CollectionChanged += ChildrenChanged;
         return children;
+    }
+
+    private static Brush CreateFrozenBrush(byte red, byte green, byte blue)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(red, green, blue));
+        brush.Freeze();
+        return brush;
     }
 
     private sealed class ScanNodeCollection : ObservableCollection<ScanNode>

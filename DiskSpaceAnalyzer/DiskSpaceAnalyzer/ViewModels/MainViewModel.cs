@@ -540,6 +540,10 @@ public sealed class MainViewModel : ViewModelBase
         {
             StatusSummary = "Анализ отменен";
         }
+        catch (Exception ex)
+        {
+            StatusSummary = $"Не удалось завершить анализ: {ex.Message}";
+        }
         finally
         {
             if (_scanCancellation.Token.IsCancellationRequested && preserveCurrentView)
@@ -642,6 +646,10 @@ public sealed class MainViewModel : ViewModelBase
         catch (OperationCanceledException)
         {
             StatusSummary = "Обновление отменено";
+        }
+        catch (Exception ex)
+        {
+            StatusSummary = $"Не удалось обновить папку: {ex.Message}";
         }
         finally
         {
@@ -919,6 +927,7 @@ public sealed class MainViewModel : ViewModelBase
             if (sender is ScanNode { IsExpanded: true } node)
             {
                 EnsureCachedChildrenLoaded(node);
+                AttachCreatedChildren(node);
             }
             else if (sender is ScanNode collapsedNode)
             {
@@ -985,12 +994,7 @@ public sealed class MainViewModel : ViewModelBase
         }
 
         node.PropertyChanged += FlatNodePropertyChanged;
-        var children = node.Children;
-        children.CollectionChanged += FlatNodeChildrenChanged;
-        foreach (var child in children)
-        {
-            SubscribeFlatNode(child);
-        }
+        AttachCreatedChildren(node);
     }
 
     private void UnsubscribeFlatNode(ScanNode node)
@@ -1010,6 +1014,21 @@ public sealed class MainViewModel : ViewModelBase
         foreach (var child in children)
         {
             UnsubscribeFlatNode(child);
+        }
+    }
+
+    private void AttachCreatedChildren(ScanNode node)
+    {
+        if (node.CreatedChildren is not { } children)
+        {
+            return;
+        }
+
+        children.CollectionChanged -= FlatNodeChildrenChanged;
+        children.CollectionChanged += FlatNodeChildrenChanged;
+        foreach (var child in children)
+        {
+            SubscribeFlatNode(child);
         }
     }
 
@@ -1218,6 +1237,12 @@ public sealed class MainViewModel : ViewModelBase
 
         if (_cache.TryLoadChildren(node))
         {
+            AttachCreatedChildren(node);
+            if (node.IsExpanded)
+            {
+                RebuildFlatNodes();
+            }
+
             return true;
         }
 
