@@ -35,10 +35,12 @@ public sealed class DiskScanner
             using var writer = _cache.BeginSnapshot(normalized, options.SizeCalculationMode);
             var counters = new ScanCounters();
             var activeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var scanRoot = Path.GetPathRoot(normalized) ?? normalized;
             var root = ScanEntry(
                 normalized,
                 fileSystemInfo: null,
                 parentId: null,
+                scanRoot,
                 options,
                 counters,
                 progress,
@@ -64,6 +66,7 @@ public sealed class DiskScanner
         string path,
         FileSystemInfo? fileSystemInfo,
         long? parentId,
+        string scanRoot,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
@@ -81,7 +84,8 @@ public sealed class DiskScanner
         {
             var attributes = fileSystemInfo?.Attributes ?? File.GetAttributes(path);
             if (attributes.HasFlag(FileAttributes.ReparsePoint) &&
-                (!options.IncludeSystemDirectories || !attributes.HasFlag(FileAttributes.Directory)))
+                (!attributes.HasFlag(FileAttributes.Directory) ||
+                 ShouldSkipLinkDirectory(path, fileSystemInfo, scanRoot, options.IncludeSystemDirectories)))
             {
                 var link = new ScanAggregate(
                     nodeId,
@@ -99,6 +103,7 @@ public sealed class DiskScanner
                     parentId,
                     path,
                     fileSystemInfo,
+                    scanRoot,
                     options,
                     counters,
                     progress,
@@ -138,6 +143,7 @@ public sealed class DiskScanner
         long? parentId,
         string path,
         FileSystemInfo? fileSystemInfo,
+        string scanRoot,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
@@ -188,6 +194,7 @@ public sealed class DiskScanner
                 decision.Risk,
                 modifiedAt,
                 ownSizeOnDisk,
+                scanRoot,
                 options,
                 counters,
                 progress,
@@ -209,6 +216,7 @@ public sealed class DiskScanner
         RiskLevel risk,
         DateTimeOffset? modifiedAt,
         long ownSizeOnDisk,
+        string scanRoot,
         ScanOptions options,
         ScanCounters counters,
         IProgress<ScanProgressInfo>? progress,
@@ -251,6 +259,7 @@ public sealed class DiskScanner
                     childInfo.FullName,
                     childInfo,
                     nodeId,
+                    scanRoot,
                     options,
                     counters,
                     progress,
@@ -308,7 +317,7 @@ public sealed class DiskScanner
     {
         var kind = FileSystemItemKind.File;
         var risk = _classifier.Classify(path);
-        var status = "Готово";
+        var status = IsShortcutFile(path) ? "Ярлык" : "Готово";
         var logicalSize = 0L;
         var sizeOnDisk = 0L;
         DateTimeOffset? modifiedAt = null;
@@ -330,6 +339,11 @@ public sealed class DiskScanner
             kind = FileSystemItemKind.NoAccess;
             risk = RiskLevel.NoAccess;
             status = "Нет доступа к метаданным";
+        }
+
+        if (kind == FileSystemItemKind.File && IsShortcutFile(path))
+        {
+            kind = FileSystemItemKind.Link;
         }
 
         counters.Files++;
@@ -433,6 +447,57 @@ public sealed class DiskScanner
         {
             return null;
         }
+    }
+
+    private static bool ShouldSkipLinkDirectory(
+        string path,
+        FileSystemInfo? fileSystemInfo,
+        string scanRoot,
+        bool includeSystemDirectories)
+    {
+        if (!includeSystemDirectories)
+        {
+            return true;
+        }
+
+        return !TryGetLinkTarget(path, fileSystemInfo, out var targetPath) ||
+               !IsSamePathRoot(scanRoot, targetPath);
+    }
+
+    private static bool TryGetLinkTarget(string path, FileSystemInfo? fileSystemInfo, out string targetPath)
+    {
+        targetPath = string.Empty;
+        try
+        {
+            var info = fileSystemInfo as DirectoryInfo ?? new DirectoryInfo(path);
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            if (target is null || string.IsNullOrWhiteSpace(target.FullName))
+            {
+                return false;
+            }
+
+            targetPath = target.FullName;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSamePathRoot(string leftPathOrRoot, string rightPath)
+    {
+        var leftRoot = Path.GetPathRoot(leftPathOrRoot) ?? leftPathOrRoot;
+        var rightRoot = Path.GetPathRoot(rightPath) ?? rightPath;
+        return string.Equals(
+            PathRiskClassifier.Normalize(leftRoot),
+            PathRiskClassifier.Normalize(rightRoot),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsShortcutFile(string path)
+    {
+        return string.Equals(Path.GetExtension(path), ".lnk", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetDirectoryIdentity(string path, FileSystemInfo? fileSystemInfo)

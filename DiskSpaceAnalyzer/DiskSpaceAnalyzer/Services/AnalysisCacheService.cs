@@ -7,7 +7,7 @@ namespace DiskSpaceAnalyzer.Services;
 
 public sealed class AnalysisCacheService
 {
-    private const int CurrentFormatVersion = 6;
+    private const int CurrentFormatVersion = 7;
     private const int CacheSizeKiB = 4096;
 
     private readonly string _cacheDirectory;
