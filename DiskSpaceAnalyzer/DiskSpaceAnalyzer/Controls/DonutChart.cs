@@ -280,7 +280,7 @@ public sealed class DonutChart : FrameworkElement
         return angle < 0 ? angle + 360 : angle;
     }
 
-    private static void DrawCenteredText(DrawingContext drawingContext, string text, WpfPoint center, double size, WpfBrush brush)
+    private void DrawCenteredText(DrawingContext drawingContext, string text, WpfPoint center, double size, WpfBrush brush)
     {
         var formatted = new FormattedText(
             text,
@@ -289,7 +289,7 @@ public sealed class DonutChart : FrameworkElement
             new Typeface("Segoe UI"),
             size,
             brush,
-            VisualTreeHelper.GetDpi(System.Windows.Application.Current.MainWindow).PixelsPerDip);
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
 
         drawingContext.DrawText(formatted, new WpfPoint(center.X - formatted.Width / 2, center.Y - formatted.Height / 2));
     }
