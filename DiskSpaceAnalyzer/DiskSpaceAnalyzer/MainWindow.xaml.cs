@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using DiskSpaceAnalyzer.Models;
+using DiskSpaceAnalyzer.Services;
 using DiskSpaceAnalyzer.ViewModels;
 
 namespace DiskSpaceAnalyzer;
@@ -11,7 +12,14 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ThemeManager.RegisterWindow(this);
+        ThemeToggle.IsChecked = ThemeManager.IsDarkTheme;
         DataContext = new MainViewModel();
+    }
+
+    private void ThemeToggle_Click(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.SetDarkTheme(ThemeToggle.IsChecked == true);
     }
 
     private void ExpanderToggle_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

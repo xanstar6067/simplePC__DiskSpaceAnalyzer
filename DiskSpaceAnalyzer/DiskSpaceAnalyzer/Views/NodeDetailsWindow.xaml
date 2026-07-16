@@ -9,15 +9,18 @@
         ResizeMode="NoResize">
     <Window.Resources>
         <Style x:Key="DetailsLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#5B6470" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
             <Setter Property="Margin" Value="0,0,14,8" />
         </Style>
         <Style x:Key="DetailsValue" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#17202A" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
             <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
     </Window.Resources>
-    <Border Padding="22" Background="#FFFFFFFF">
+    <Border Padding="22"
+            Background="{DynamicResource PanelBackgroundBrush}"
+            BorderBrush="{DynamicResource PanelBorderBrush}"
+            BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -26,7 +29,7 @@
 
             <StackPanel>
                 <TextBlock Text="{Binding DisplayName}" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" />
-                <TextBlock Text="{Binding FullPath}" Foreground="#5B6470" TextWrapping="Wrap" Margin="0,4,0,18" />
+                <TextBlock Text="{Binding FullPath}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,18" />
 
                 <Grid>
                     <Grid.ColumnDefinitions>

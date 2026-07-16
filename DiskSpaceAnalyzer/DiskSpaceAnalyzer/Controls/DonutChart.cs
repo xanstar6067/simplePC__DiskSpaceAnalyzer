@@ -64,6 +64,8 @@ public sealed class DonutChart : FrameworkElement
             Placement = System.Windows.Controls.Primitives.PlacementMode.Mouse,
             PlacementTarget = this
         };
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     public IEnumerable? ItemsSource
@@ -106,9 +108,9 @@ public sealed class DonutChart : FrameworkElement
 
         if (total <= 0)
         {
-            drawingContext.DrawEllipse(new WpfSolidColorBrush(WpfColor.FromRgb(234, 237, 241)), null, center, radius, radius);
-            drawingContext.DrawEllipse(WpfBrushes.White, null, center, innerRadius, innerRadius);
-            DrawCenteredText(drawingContext, "Нет данных", center, 14, WpfBrushes.Gray);
+            drawingContext.DrawEllipse(GetThemeBrush("ChartTrackBrush", WpfBrushes.LightGray), null, center, radius, radius);
+            drawingContext.DrawEllipse(GetThemeBrush("ChartCenterBrush", WpfBrushes.White), null, center, innerRadius, innerRadius);
+            DrawCenteredText(drawingContext, "Нет данных", center, 14, GetThemeBrush("MutedTextBrush", WpfBrushes.Gray));
             return;
         }
 
@@ -116,9 +118,9 @@ public sealed class DonutChart : FrameworkElement
         {
             var brush = new WpfSolidColorBrush(Palette[0]);
             drawingContext.DrawEllipse(brush, null, center, radius, radius);
-            drawingContext.DrawEllipse(WpfBrushes.White, null, center, innerRadius, innerRadius);
+            drawingContext.DrawEllipse(GetThemeBrush("ChartCenterBrush", WpfBrushes.White), null, center, innerRadius, innerRadius);
             _hitAreas.Add(new SliceHitArea(nodes[0], 0, 360, innerRadius, radius, center));
-            DrawCenteredText(drawingContext, FormatSize(nodes[0]), center, 15, WpfBrushes.Black);
+            DrawCenteredText(drawingContext, FormatSize(nodes[0]), center, 15, GetThemeBrush("ChartTextBrush", WpfBrushes.Black));
             return;
         }
 
@@ -133,8 +135,8 @@ public sealed class DonutChart : FrameworkElement
             angle += sweep;
         }
 
-        drawingContext.DrawEllipse(WpfBrushes.White, null, center, innerRadius, innerRadius);
-        DrawCenteredText(drawingContext, FileSizeFormatter.Format(total), center, 15, WpfBrushes.Black);
+        drawingContext.DrawEllipse(GetThemeBrush("ChartCenterBrush", WpfBrushes.White), null, center, innerRadius, innerRadius);
+        DrawCenteredText(drawingContext, FileSizeFormatter.Format(total), center, 15, GetThemeBrush("ChartTextBrush", WpfBrushes.Black));
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -221,6 +223,28 @@ public sealed class DonutChart : FrameworkElement
         _hoveredNode = null;
         Cursor = null;
         HideSliceToolTip();
+    }
+
+    private WpfBrush GetThemeBrush(string resourceKey, WpfBrush fallback)
+    {
+        return TryFindResource(resourceKey) as WpfBrush ?? fallback;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
+    }
+
+    private void OnThemeChanged(object? sender, EventArgs e)
+    {
+        ClearHover();
+        InvalidateVisual();
     }
 
     private static Geometry CreateDonutSlice(WpfPoint center, double radius, double innerRadius, double startAngle, double endAngle)
