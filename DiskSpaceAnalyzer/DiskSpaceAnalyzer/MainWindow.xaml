@@ -331,6 +331,10 @@
                                     </Setter.Value>
                                 </Setter>
                                 <Style.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}" />
+                                    </Trigger>
                                     <DataTrigger Binding="{Binding IsRefreshing}" Value="True">
                                         <Setter Property="Background" Value="{DynamicResource RefreshingBackgroundBrush}" />
                                         <Setter Property="BorderBrush" Value="{DynamicResource RefreshingBorderBrush}" />
