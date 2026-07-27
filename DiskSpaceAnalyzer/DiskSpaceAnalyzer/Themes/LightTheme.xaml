@@ -10,6 +10,7 @@
     <SolidColorBrush x:Key="ControlHoverBrush" Color="#EDF3F5" />
     <SolidColorBrush x:Key="ControlPressedBrush" Color="#E2ECEE" />
     <SolidColorBrush x:Key="ControlBorderBrush" Color="#C6D0D9" />
+    <SolidColorBrush x:Key="MenuSeparatorBrush" Color="#D8E0E7" />
     <SolidColorBrush x:Key="FocusBrush" Color="#2A8C80" />
     <SolidColorBrush x:Key="AccentBrush" Color="#2A8176" />
     <SolidColorBrush x:Key="AccentHoverBrush" Color="#226D64" />
