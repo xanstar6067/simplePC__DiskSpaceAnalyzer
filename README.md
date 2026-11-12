@@ -37,6 +37,8 @@ MCP предоставляет только пути и метаданные а�
 
 ## Сборка и проверка
 
+В репозитории настроен официальный источник NuGet v2 (`www.nuget.org`), доступный в текущей сети. Это позволяет восстанавливать пакеты и публиковать приложение, когда `api.nuget.org` не отвечает. Настройка действует только для этого репозитория.
+
 ```powershell
 dotnet build DiskSpaceAnalyzer/DiskSpaceAnalyzer.slnx -c Release
 dotnet run --project DiskSpaceAnalyzer/DiskSpaceAnalyzer.IntegrationTests -c Release
