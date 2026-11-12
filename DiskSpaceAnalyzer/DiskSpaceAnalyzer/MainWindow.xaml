@@ -151,6 +151,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Border Style="{StaticResource Panel}" Padding="14">
@@ -562,6 +563,19 @@
                 </Grid>
             </Border>
         </Grid>
+        <Border Grid.Row="3" Style="{StaticResource Panel}" Padding="12,8" Margin="0,12,0,0">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Подключение ИИ…" Click="AiConnection_Click" Margin="8,0,0,0" />
+                <Button DockPanel.Dock="Right" Content="Скопировать промпт для ИИ"
+                        Command="{Binding Mcp.CopyPromptCommand}" Margin="12,0,0,0"
+                        ToolTip="Скопировать адрес MCP-сервера, ключ подключения и инструкции для разбора анализа" />
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Mcp.Status}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Mcp.Feedback}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource MutedTextBrush}" AutomationProperties.LiveSetting="Polite" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
     </Grid>
 </Window>
 

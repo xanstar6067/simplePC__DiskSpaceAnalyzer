@@ -46,7 +46,9 @@ public sealed class MainViewModel : ViewModelBase
     private long _logicalBytes;
     private long _sizeOnDiskBytes;
 
-    public MainViewModel()
+    public MainViewModel() : this(loadDrives: true) { }
+
+    internal MainViewModel(bool loadDrives)
     {
         _scanner = new DiskScanner(_classifier, _cache);
 
@@ -63,14 +65,14 @@ public sealed class MainViewModel : ViewModelBase
         ClearCacheCommand = new RelayCommand(_ => ClearCache(), _ => !IsScanning);
 
         Roots.CollectionChanged += RootsChanged;
-        LoadDrives();
+        if (loadDrives) LoadDrives();
 
         _driveRefreshTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(3)
         };
         _driveRefreshTimer.Tick += (_, _) => RefreshAvailableDrives(selectFirst: false);
-        _driveRefreshTimer.Start();
+        if (loadDrives) _driveRefreshTimer.Start();
     }
 
     public ObservableCollection<DriveSummary> AvailableDrives { get; } = [];
@@ -82,6 +84,35 @@ public sealed class MainViewModel : ViewModelBase
     public ObservableCollection<ScanNode> ChartChildren { get; } = [];
 
     public ObservableCollection<ScanNode> SearchResults { get; } = [];
+
+    public McpConnectionViewModel? Mcp { get; set; }
+
+    // Called only on the dispatcher. No mutable WPF objects escape into MCP queries.
+    internal AnalysisContext CaptureAnalysisContext()
+    {
+        var source = SelectedNode is { IsCacheBacked: true } ? SelectedNode : Roots.FirstOrDefault();
+        return new(source?.CacheDatabasePath, SelectedFlatNode?.FullPath ?? SelectedNode?.FullPath,
+            IsScanning, CurrentPath, StatusSummary, _excludedPaths.ToArray());
+    }
+
+    internal bool RevealAnalysisNode(string path)
+    {
+        if (IsScanning || _excludedPaths.Any(excluded => PathRiskClassifier.IsSameOrChild(path, excluded))) return false;
+        var node = Roots.FirstOrDefault(root => PathRiskClassifier.IsSameOrChild(path, root.FullPath));
+        for (var depth = 0; node is not null && depth < 512; depth++)
+        {
+            if (string.Equals(node.FullPath, path, StringComparison.OrdinalIgnoreCase))
+            {
+                NavigateToNode(node, rememberCurrent: true);
+                node.IsSelected = true;
+                return true;
+            }
+            if (!EnsureCachedChildrenLoaded(node)) return false;
+            node.IsExpanded = true;
+            node = node.ExistingChildren.FirstOrDefault(child => PathRiskClassifier.IsSameOrChild(path, child.FullPath));
+        }
+        return false;
+    }
 
     public RelayCommand StartScanCommand { get; }
 
